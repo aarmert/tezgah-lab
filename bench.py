@@ -110,6 +110,10 @@ DEFAULT_CONFIG = {
                  "banner": "^BOOT ", "banner_timeout_s": 3},
     "permissions": {"allow_flash": True, "allow_reset": True, "plans_dir_only": False},
     "paths": {"plans_dir": "plans", "runs_dir": "runs"},
+    # cam_blink: android-camera-tool ile video. roi = [x, y, genişlik, yükseklik] (piksel) verilirse
+    # LED bölgesi otomatik aranmaz.
+    "camera": {"tool_dir": "~/android-camera-tool", "bun": "~/.bun/bin/bun", "serial": "",
+               "camera": "back", "fps": 30, "roi": None},
 }
 
 
@@ -530,12 +534,13 @@ class SimBoard:
         self.image_path = st.get("image_path")
         self.crashed = st.get("crashed", False)
         self.boot_t = st.get("boot_t", time.time())
+        self.green = st.get("green", 2.0)   # yeşil LED: yanıp sönme Hz'i, "on" veya "off"
         self.out: list[str] = []
 
     def _save(self):
         self.state_path.write_text(json.dumps(
             {"image": self.image, "image_path": self.image_path, "crashed": self.crashed,
-             "boot_t": self.boot_t}), encoding="utf-8")
+             "boot_t": self.boot_t, "green": self.green}), encoding="utf-8")
 
     def flash(self, image: Path):
         if not image.is_file():
@@ -548,9 +553,25 @@ class SimBoard:
     def reset(self, cause="PIN,SFT"):
         self.crashed = False
         self.boot_t = time.time()
+        self.green = 2.0
         if self.image:
             self.out.append(f"BOOT stm32bench-fw v{SIM_FW_VERSION} reset={cause}")
         self._save()
+
+    def write_video(self, dest: Path, seconds: float):
+        """Yeşil LED'i taklit eden sentetik video (30 fps): gri zemin, LED yerinde yanıp sönen kare."""
+        if isinstance(self.green, float):
+            half = 0.5 / self.green
+            enable = f"enable='lt(mod(t,{2 * half:.6f}),{half:.6f})'"
+        else:
+            enable = "enable='1'" if self.green == "on" else "enable='0'"
+        p = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                            f"color=c=0x404040:s=640x360:r=30:d={seconds:g},"
+                            f"drawbox=x=300:y=200:w=24:h=24:c=0x30FF30:t=fill:{enable}",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dest)],
+                           capture_output=True, text=True, timeout=60)
+        if p.returncode != 0:
+            raise BenchError("camera_failed", "[sim] sentetik video üretilemedi (ffmpeg).", [], tail(p.stderr))
 
     def _fault_pc(self) -> int:
         """Gerçek firmware'deki 'udf' komutunun adresini bul (yoksa 0)."""
@@ -583,9 +604,15 @@ class SimBoard:
             self.out.append("TEMP 30.0")
         elif m := re.fullmatch(r"LED ([GORB]) (ON|OFF)", cmd):
             self.out.append(f"OK LED {m.group(1)} {m.group(2)}")
+            if m.group(1) == "G":
+                self.green = m.group(2).lower()
+                self._save()
         elif m := re.fullmatch(r"BLINK (\d+)", cmd):
             hz = int(m.group(1))
             self.out.append(f"OK BLINK {hz}" if 1 <= hz <= 20 else "ERR range 1-20")
+            if 1 <= hz <= 20:
+                self.green = float(hz)
+                self._save()
         elif cmd == "CRASH":
             self.out.append("OK CRASH")
             self.out.append(f"HARDFAULT pc=0x{self._fault_pc():08X} lr=0x080000A7 cfsr=0x00010000 hfsr=0x40000000")
@@ -751,6 +778,9 @@ class Session:
         self.transcript: list[tuple[float, str, str]] = []
         self.t0 = time.monotonic()
         self.last_fault: str | None = None
+        self.run_dir: Path | None = None   # cam_blink dosyaları buraya
+        self.step_no = 0
+        self.cam_last: dict | None = None  # son yanıp sönme ölçümünün bölgesi ve seviyeleri (steady için)
 
     def _pump(self, timeout: float):
         data = self.t.read_available(timeout)
@@ -822,7 +852,10 @@ def open_session(cfg: Config, board: SimBoard | None) -> Session:
 # Test planı çalıştırıcı
 # ---------------------------------------------------------------------------
 
-ACTIONS = {"flash", "reset", "expect", "send", "silence", "delay", "clock_check"}
+CAM_SMALL_W = 320       # LED arama ve ölçüm bu genişliğe küçültülmüş karelerde yapılır
+CAM_ROI_SMALL = 5       # LED bölgesinin kenarı (küçük karede piksel)
+CAM_MIN_CONTRAST = 30   # yanıp sönme sayılmak için en az parlaklık farkı (0-255)
+ACTIONS = {"flash", "reset", "expect", "send", "silence", "delay", "clock_check", "cam_blink"}
 TICK_PATTERN = r"^TICK (\d+)$"
 NEVER_MATCH = "__BU_SATIR_ESLESMEMELI__"
 
@@ -856,6 +889,17 @@ def load_plan(cfg: Config, name_or_path: str) -> tuple[Path, dict]:
                 raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için range = [alt, üst] gerekli.")
             if not isinstance(s.get("seconds"), (int, float)) or s["seconds"] <= 0:
                 raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için seconds > 0 gerekli.")
+        if s["action"] == "cam_blink":
+            steady = s.get("steady")
+            if steady not in (None, "on", "off"):
+                raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink steady 'on' veya 'off' olmalı.")
+            for key in ("range", "duty_range"):
+                rng = s.get(key)
+                if rng is not None and not (isinstance(rng, list) and len(rng) == 2
+                                            and all(isinstance(v, (int, float)) for v in rng)):
+                    raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink {key} = [alt, üst] olmalı.")
+            if steady is None and s.get("range") is None:
+                raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink için range (Hz) veya steady gerekli.")
         for key in ("pattern", "expect"):
             if key in s:
                 try:
@@ -951,6 +995,8 @@ def run_step(cfg: Config, prog: Programmer, sess: Session, plan: dict, step: dic
 
     if a == "clock_check":
         return clock_check(cfg, sess, plan, step, timeout)
+    if a == "cam_blink":
+        return cam_blink(cfg, prog, sess, step)
 
     pattern = step.get("pattern") if a == "expect" else step.get("expect")
     if a == "send":
@@ -1030,6 +1076,239 @@ def clock_check(cfg: Config, sess: Session, plan: dict, step: dict, timeout: flo
     return f"{msg} ([{lo}, {hi}] aralığında)"
 
 
+# ---------------------------------------------------------------------------
+# Kamera ile LED yanıp sönme ölçümü (cam_blink)
+# ---------------------------------------------------------------------------
+
+def record_video(cfg: Config, prog: Programmer, seconds: float, dest: Path) -> None:
+    """Videoyu çekip dest'e taşır. Gerçek kartta android-camera-tool, sim'de ffmpeg ile sentetik video."""
+    if isinstance(prog, SimProgrammer):
+        prog.board.write_video(dest, seconds)
+        return
+    tool_dir = cfg.resolve(cfg.get("camera", "tool_dir"))
+    bun = str(cfg.resolve(cfg.get("camera", "bun")))
+    if not Path(bun).is_file():
+        bun = shutil.which("bun") or bun
+    cmd = [bun, "scripts/record-video.ts", cfg.get("camera", "serial") or "",
+           cfg.get("camera", "camera"), f"{seconds:g}", str(cfg.get("camera", "fps"))]
+    # serial boşsa kamera aracı tek bağlı cihazı seçer; birden fazla cihaz varsa hata verir
+    try:
+        p = subprocess.run(cmd, cwd=tool_dir, capture_output=True, text=True, errors="replace",
+                           timeout=seconds + 90)
+    except FileNotFoundError:
+        raise BenchError("tool_not_found", f"Kamera aracı çalıştırılamadı: {bun} / {tool_dir}",
+                         ["bench.toml [camera] tool_dir ve bun yollarını kontrol et"])
+    except subprocess.TimeoutExpired:
+        raise BenchError("camera_failed", "Kamera kaydı zaman aşımına uğradı.",
+                         ["Telefon kilitli veya scrcpy takıldı", "adb devices ile telefonu kontrol et"])
+    path = Path(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else None
+    if p.returncode != 0 or not path or path.suffix != ".mp4" or not path.is_file():
+        raise BenchError("camera_failed", "Kamera videosu çekilemedi.",
+                         ["Telefon bağlı değil veya USB hata ayıklama izni yok (adb devices)",
+                          "Birden fazla adb cihazı var: bench.toml [camera] serial ver",
+                          "Telefon ekranı kilitli", f"Kamera {cfg.get('camera', 'fps')} fps desteklemiyor"],
+                         tail(p.stderr + p.stdout))
+    shutil.move(str(path), dest)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def video_frames(video: Path):
+    """(kareler, zaman damgaları sn). Zamanlar ffprobe ile videonun kendi kare zaman damgalarından."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        raise BenchError("tool_not_found", "cam_blink için OpenCV ve NumPy gerekli.",
+                         ["sudo apt install python3-opencv python3-numpy"])
+    p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "frame=best_effort_timestamp_time,pts_time", "-of", "json", str(video)],
+                       capture_output=True, text=True, timeout=60)
+    try:
+        ts = [float(f.get("best_effort_timestamp_time") or f["pts_time"])
+              for f in json.loads(p.stdout)["frames"]]
+    except (ValueError, KeyError, TypeError):
+        raise BenchError("camera_failed", "Videonun kare zaman damgaları okunamadı (ffprobe).", [], tail(p.stderr))
+    cap = cv2.VideoCapture(str(video))
+    frames = []
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        frames.append(f)
+    cap.release()
+    if len(frames) != len(ts) or len(frames) < 10:
+        raise BenchError("camera_failed",
+                         f"Video kareleri ve zaman damgaları uyuşmuyor ({len(frames)} kare, {len(ts)} zaman).",
+                         ["Video bozuk veya çok kısa"])
+    return frames, np.array(ts) - ts[0]
+
+
+def find_led_roi(small, scale: float) -> tuple[list[int], list[dict]]:
+    """Kareler boyunca parlaklığı en çok değişen bölgeyi bulur. Tam çözünürlükte [x, y, w, h] ve
+    ilk 3 aday döndürür (yansımalar gibi başka yanıp sönen yerleri görebilmek için)."""
+    import cv2
+    import numpy as np
+    k = CAM_ROI_SMALL
+    std = cv2.blur(small.std(axis=0), (k, k))
+    cands = []
+    for _ in range(3):
+        y, x = np.unravel_index(int(np.argmax(std)), std.shape)
+        cands.append({"x": round(x / scale), "y": round(y / scale), "std": round(float(std[y, x]), 1)})
+        std[max(0, y - 2 * k):y + 2 * k, max(0, x - 2 * k):x + 2 * k] = 0
+    cx, cy = cands[0]["x"], cands[0]["y"]
+    side = round(k / scale)
+    return [cx - side // 2, cy - side // 2, side, side], cands
+
+
+def blink_edges(t, sig, thr: float, hyst: float) -> tuple[list[float], list[float]]:
+    """Histerezisli eşik geçişleri; geçiş anı iki kare arasında doğrusal ara değerle bulunur."""
+    rising, falling = [], []
+    state = None
+    for i, v in enumerate(sig):
+        if state is None:
+            state = v > thr
+            continue
+        new = (v > thr + hyst) if not state else not (v < thr - hyst)
+        if new != state:
+            a, b = sig[i - 1], v
+            frac = (thr - a) / (b - a) if b != a else 0.5
+            te = t[i - 1] + min(max(frac, 0.0), 1.0) * (t[i] - t[i - 1])
+            (rising if new else falling).append(float(te))
+            state = new
+    return rising, falling
+
+
+def edge_freq(edges: list[float]) -> float | None:
+    return (len(edges) - 1) / (edges[-1] - edges[0]) if len(edges) >= 2 else None
+
+
+def cam_blink(cfg: Config, prog: Programmer, sess: Session, step: dict) -> str:
+    import cv2
+    import numpy as np
+    secs = float(step.get("seconds", 4))
+    skip = float(step.get("skip_s", 0.5))
+    steady = step.get("steady")
+    run_dir = sess.run_dir or cfg.runs_dir
+    base = f"cam_step{sess.step_no:02d}"
+    video = run_dir / f"{base}.mp4"
+    sess.note(f"cam_blink: {secs:g} sn video -> {video.name}")
+    record_video(cfg, prog, secs, video)
+    frames, t = video_frames(video)
+
+    h, w = frames[0].shape[:2]
+    scale = CAM_SMALL_W / w
+    # Renkten bağımsız parlaklık: kanalların en büyüğü (yeşil, kırmızı, mavi LED aynı şekilde görünür)
+    small = np.stack([cv2.resize(f.max(axis=2), (CAM_SMALL_W, round(h * scale)), interpolation=cv2.INTER_AREA)
+                      for f in frames]).astype(np.float32)
+    use = t >= skip  # kameranın pozlama/odak oturması için baştaki kareler atlanır
+    fixed_roi = cfg.get("camera", "roi")
+    cands = []
+    if fixed_roi:
+        roi, roi_src = [int(v) for v in fixed_roi], "bench.toml"
+    elif steady:
+        if not sess.cam_last:
+            raise BenchError("plan_invalid", "steady kontrolü için LED bölgesi bilinmiyor.",
+                             ["Planda önce yanıp sönen bir cam_blink adımı olmalı (bölgeyi o bulur)",
+                              "veya bench.toml [camera] roi = [x, y, w, h] ver"])
+        roi, roi_src = sess.cam_last["roi"], "önceki cam_blink adımı"
+    else:
+        roi, cands = find_led_roi(small[use], scale)
+        roi_src = "otomatik"
+    x, y, rw, rh = roi
+    sx0, sy0 = max(0, int(x * scale)), max(0, int(y * scale))
+    sx1, sy1 = max(sx0 + 1, int(round((x + rw) * scale))), max(sy0 + 1, int(round((y + rh) * scale)))
+    sig_all = small[:, sy0:sy1, sx0:sx1].mean(axis=(1, 2))
+    tt, sig = t[use], sig_all[use]
+    dts = np.diff(tt)
+    fps = 1.0 / float(np.median(dts))
+    lo_lvl, hi_lvl = float(np.percentile(sig, 5)), float(np.percentile(sig, 95))
+    contrast = hi_lvl - lo_lvl
+
+    np.savetxt(run_dir / f"{base}.csv", np.column_stack([t, sig_all]), fmt="%.4f", delimiter=",",
+               header="t_s,parlaklik", comments="")
+    mark = frames[int(np.argmax(np.where(use, sig_all, -1)))].copy()
+    cv2.rectangle(mark, (x, y), (x + rw, y + rh), (0, 0, 255), 3)
+    for c in cands[1:]:
+        cv2.circle(mark, (c["x"], c["y"]), 20, (0, 255, 255), 2)
+
+    def save_mark(label: str):
+        cv2.putText(mark, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3)
+        cv2.imwrite(str(run_dir / f"{base}_roi.jpg"), mark)
+
+    where = f"bölge {roi} ({roi_src}), {len(tt)} kare, {fps:.1f} fps"
+    files = f"video {video.name}, işaretli kare {base}_roi.jpg"
+
+    if steady:
+        prev = sess.cam_last
+        thr = prev["threshold"] if prev and roi == prev["roi"] else None
+        if thr is None:
+            raise BenchError("plan_invalid", "steady kontrolü için açık/kapalı eşiği bilinmiyor.",
+                             ["Aynı bölgede önce yanıp sönen bir cam_blink adımı olmalı"])
+        hyst = 0.1 * prev["contrast"]
+        rising, falling = blink_edges(tt, sig, thr, hyst)
+        level = float(np.median(sig))
+        is_on = level > thr
+        save_mark(f"steady {'ON' if is_on else 'OFF'}? level {level:.0f} thr {thr:.0f}")
+        msg = (f"seviye {level:.0f} (eşik {thr:.0f}, önceki açık/kapalı {prev['hi']:.0f}/{prev['lo']:.0f}), "
+               f"{len(rising) + len(falling)} geçiş; {where}; {files}")
+        if rising or falling:
+            raise BenchError("value_out_of_range", f"LED sabit olmalıydı ama {len(rising) + len(falling)} geçiş var: {msg}",
+                             ["LED hâlâ yanıp sönüyor (heartbeat kapanmadı)", "Kamerada titreşim veya ışık değişimi"])
+        if is_on != (steady == "on"):
+            raise BenchError("value_out_of_range",
+                             f"LED sabit {'AÇIK' if steady == 'on' else 'KAPALI'} olmalıydı, "
+                             f"ölçülen {'açık' if is_on else 'kapalı'}: {msg}",
+                             ["LED komutu uygulanmadı", "LED bölgesi yanlış (işaretli kareye bak)"])
+        return f"LED sabit {'açık' if is_on else 'kapalı'}: {msg}"
+
+    if contrast < CAM_MIN_CONTRAST:
+        save_mark(f"no blink, contrast {contrast:.0f}")
+        raise BenchError("no_blink_detected",
+                         f"LED bölgesinde yanıp sönme yok (kontrast {contrast:.0f} < {CAM_MIN_CONTRAST}); {where}; {files}.",
+                         ["LED yanıp sönmüyor (kart donmuş veya LED sabit)", "Telefon karta bakmıyor (işaretli kareye bak)",
+                          "LED bölgesi yanlış: bench.toml [camera] roi ile sabitle"])
+    thr = (lo_lvl + hi_lvl) / 2
+    rising, falling = blink_edges(tt, sig, thr, 0.1 * contrast)
+    fr, ff = edge_freq(rising), edge_freq(falling)
+    if fr is None and ff is None:
+        save_mark(f"edges {len(rising)}/{len(falling)}")
+        raise BenchError("no_blink_detected",
+                         f"Frekans için yeterli geçiş yok (yükselen {len(rising)}, düşen {len(falling)}); {where}; {files}.",
+                         ["Kayıt süresi çok kısa: seconds'u artır", "LED çok yavaş yanıp sönüyor"])
+    # İki kenar türünün periyot sayısıyla ağırlıklı ortalaması
+    n_r, n_f = max(len(rising) - 1, 0), max(len(falling) - 1, 0)
+    freq = ((fr or 0) * n_r + (ff or 0) * n_f) / (n_r + n_f)
+    # Doluluk: her yükselen kenardan sonraki düşen kenara kadar açık süre / periyot
+    ons = [next(f for f in falling if f > r) - r for r in rising if any(f > r for f in falling)]
+    duty = float(np.mean(ons)) * freq if ons else None
+    sess.cam_last = {"roi": roi, "threshold": thr, "contrast": contrast, "hi": hi_lvl, "lo": lo_lvl}
+    save_mark(f"{freq:.3f} Hz duty {duty:.2f}" if duty is not None else f"{freq:.3f} Hz")
+
+    lo, hi = step["range"]
+    duty_txt = f"doluluk {duty:.2f}" if duty is not None else "doluluk ölçülemedi"
+    msg = (f"{freq:.3f} Hz, {duty_txt} (yükselen {len(rising)}, düşen {len(falling)} kenar, "
+           f"kontrast {contrast:.0f}); {where}; {files}")
+    if cands:
+        msg += "; adaylar " + ", ".join(f"({c['x']},{c['y']}) std {c['std']}" for c in cands)
+    warn = ""
+    if freq > fps / 4:
+        warn = (f"UYARI: frekans kare hızının dörtte birinden ({fps / 4:.1f} Hz) büyük; "
+                f"periyot başına {fps / freq:.1f} kare, ölçüm güvenilmez. ")
+    if not lo <= freq <= hi:
+        raise BenchError("value_out_of_range", f"{warn}frekans {freq:.3f} Hz beklenen aralık [{lo}, {hi}] dışında: {msg}",
+                         ["Firmware'in yanıp sönme hızı veya saati yanlış",
+                          "Yanlış bölge ölçülüyor: işaretli kareye bak, gerekirse bench.toml [camera] roi",
+                          "Kare hızı yetersiz (örnekleme hatası)"])
+    drng = step.get("duty_range")
+    if drng and (duty is None or not drng[0] <= duty <= drng[1]):
+        raise BenchError("value_out_of_range", f"{warn}doluluk {duty_txt}, beklenen [{drng[0]}, {drng[1]}]: {msg}",
+                         ["LED açık/kapalı süreleri firmware'de farklı", "Kamera pozlama süresi açık süreyi uzatıyor"])
+    return f"{warn}{msg} ([{lo}, {hi}] Hz aralığında)"
+
+
 def recover_board(cfg: Config, prog: Programmer, sess: Session) -> dict:
     banner = cfg.get("recovery", "banner")
     bt = float(cfg.get("recovery", "banner_timeout_s"))
@@ -1066,6 +1345,12 @@ def mutate_plan(plan: dict) -> tuple[dict, int | None]:
         if s["action"] == "clock_check":
             s["range"] = [-2.0, -1.0]  # oran asla negatif olamaz
             s["seconds"] = min(float(s["seconds"]), 1.0)
+            return plan, i + 1
+        if s["action"] == "cam_blink":
+            if s.get("steady"):
+                s["steady"] = "off" if s["steady"] == "on" else "on"  # tersini bekle
+            else:
+                s["range"] = [-2.0, -1.0]  # frekans asla negatif olamaz
             return plan, i + 1
         key = "pattern" if s["action"] == "expect" else ("expect" if s["action"] == "send" and s.get("expect") else None)
         if key:
@@ -1167,6 +1452,7 @@ def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "
     prog = make_programmer(cfg, board)
     meta = run_metadata_start(cfg, plan, prog)
     sess = open_session(cfg, board)
+    sess.run_dir = run_dir
     results = []
     failed: BenchError | None = None
     t_start = time.monotonic()
@@ -1174,6 +1460,7 @@ def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "
         for i, step in enumerate(plan["step"], 1):
             t0 = time.monotonic()
             desc = step.get("name") or step["action"] + (f" {step['text']}" if step.get("text") else "")
+            sess.step_no = i
             try:
                 msg = run_step(cfg, prog, sess, plan, step)
                 results.append({"step": i, "name": desc, "ok": True, "summary": msg,
