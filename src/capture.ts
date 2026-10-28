@@ -11,6 +11,15 @@ export type CaptureOptions = {
   camera?: Camera
 }
 
+export type VideoOptions = CaptureOptions & {
+  /** Recording length in seconds (whole or fractional), 1 to 60. Default 4. */
+  seconds?: number
+  /** Camera frame rate passed to scrcpy as --camera-fps. Default: the camera's own default. */
+  fps?: number
+}
+
+export const VIDEO_SECONDS = { min: 1, max: 60, default: 4 } as const
+
 export const CAPTURE_PHASES = [
   "checking-tools",
   "selecting-device",
@@ -99,6 +108,23 @@ export function parseCaptureOptions(input: unknown): CaptureOptions & { camera: 
   return { serial: serial?.trim(), camera }
 }
 
+export function parseVideoOptions(input: unknown): VideoOptions & { camera: Camera; seconds: number } {
+  const base = parseCaptureOptions(input)
+  const value = (input ?? {}) as Record<string, unknown>
+  const seconds = value.seconds === undefined ? VIDEO_SECONDS.default : value.seconds
+  const fps = value.fps
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < VIDEO_SECONDS.min || seconds > VIDEO_SECONDS.max) {
+    throw new CaptureError(
+      "invalid-options",
+      `\`seconds\` must be a number from ${VIDEO_SECONDS.min} to ${VIDEO_SECONDS.max}.`,
+    )
+  }
+  if (fps !== undefined && (typeof fps !== "number" || !Number.isInteger(fps) || fps < 1 || fps > 240)) {
+    throw new CaptureError("invalid-options", "`fps` must be an integer from 1 to 240.")
+  }
+  return { ...base, seconds, fps }
+}
+
 export type AdbDevice = { serial: string; state: string }
 
 export function parseAdbDevices(stdout: string): AdbDevice[] {
@@ -152,7 +178,13 @@ export function selectDevice(devices: readonly AdbDevice[], serial?: string): st
   return device.serial
 }
 
-export function scrcpyArgs(serial: string, camera: Camera, recordPath: string, recordSeconds: number): string[] {
+export function scrcpyArgs(
+  serial: string,
+  camera: Camera,
+  recordPath: string,
+  recordSeconds: number,
+  fps?: number,
+): string[] {
   return [
     `--serial=${serial}`,
     "--video-source=camera",
@@ -163,6 +195,7 @@ export function scrcpyArgs(serial: string, camera: Camera, recordPath: string, r
     "--no-control",
     "--video-codec=h264",
     "--max-size=1920",
+    ...(fps === undefined ? [] : [`--camera-fps=${fps}`]),
     `--time-limit=${recordSeconds}`,
     `--record=${recordPath}`,
   ]
@@ -203,7 +236,27 @@ export async function capturePhoto(
   hooks: CaptureHooks = {},
   runtime: CaptureRuntime = defaultRuntime(),
 ): Promise<string> {
-  const { serial: requestedSerial, camera } = parseCaptureOptions(options)
+  const { serial, camera } = parseCaptureOptions(options)
+  return runCapture({ serial, camera, seconds: runtime.recordSeconds, keepVideo: false }, hooks, runtime)
+}
+
+/**
+ * Records `seconds` of camera video and keeps it. Returns the absolute path of the MP4 in a new temp
+ * directory. Frame timestamps in the file are the device capture times written by scrcpy.
+ */
+export async function captureVideo(
+  options: VideoOptions = {},
+  hooks: CaptureHooks = {},
+  runtime: CaptureRuntime = defaultRuntime(),
+): Promise<string> {
+  const { serial, camera, seconds, fps } = parseVideoOptions(options)
+  return runCapture({ serial, camera, seconds, fps, keepVideo: true }, hooks, runtime)
+}
+
+type CaptureJob = { serial?: string; camera: Camera; seconds: number; fps?: number; keepVideo: boolean }
+
+async function runCapture(job: CaptureJob, hooks: CaptureHooks, runtime: CaptureRuntime): Promise<string> {
+  const { serial: requestedSerial, camera } = job
   const { commands, timeouts } = runtime
   let phase: CapturePhase = CAPTURE_PHASES[0]
   let workDir: string | undefined
@@ -221,7 +274,8 @@ export async function capturePhoto(
         throw new CaptureError("missing-dependency", `${tool} is not installed. ${INSTALL_HINTS[tool]}`, phase)
       }
       if (error instanceof CommandAbortedError) {
-        throw new CaptureError("cancelled", `Photo capture was cancelled during the ${phase} phase.`, phase)
+        const what = job.keepVideo ? "Video recording" : "Photo capture"
+        throw new CaptureError("cancelled", `${what} was cancelled during the ${phase} phase.`, phase)
       }
       if (error instanceof CommandTimeoutError) {
         const detail = tail(error.stderr)
@@ -296,17 +350,22 @@ export async function capturePhoto(
     const photoPath = join(workDir, "photo.jpg")
     const recording = await run(
       "scrcpy",
-      scrcpyArgs(serial, camera, recordPath, runtime.recordSeconds),
-      runtime.recordSeconds * 1_000 + timeouts.recordGraceMs,
+      scrcpyArgs(serial, camera, recordPath, job.seconds, job.fps),
+      job.seconds * 1_000 + timeouts.recordGraceMs,
     )
     if (recording.exitCode !== 0 || !(await nonEmptyFile(recordPath))) {
       throw new CaptureError(
         "recording-failed",
         `scrcpy could not record the ${camera} camera of ${serial} (exit ${recording.exitCode ?? recording.signal}). ` +
-          `Check that the device has a ${camera} camera (\`scrcpy --serial=${serial} --list-cameras\`) and that scrcpy is 2.5 or newer.` +
+          `Check that the device has a ${camera} camera${job.fps === undefined ? "" : ` that supports ${job.fps} fps`} (\`scrcpy --serial=${serial} --list-cameras\`) and that scrcpy is 2.5 or newer.` +
           `\n${tail(recording.stderr)}`,
         phase,
       )
+    }
+
+    if (job.keepVideo) {
+      await enter("complete")
+      return recordPath
     }
 
     await enter("extracting")

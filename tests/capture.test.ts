@@ -5,8 +5,10 @@ import { dirname, isAbsolute } from "node:path"
 import {
   CaptureError,
   capturePhoto,
+  captureVideo,
   parseAdbDevices,
   parseCaptureOptions,
+  parseVideoOptions,
   selectDevice,
   type CapturePhase,
 } from "../src/capture.ts"
@@ -54,6 +56,21 @@ describe("options and device selection", () => {
     expect(parseCaptureOptions({ serial: " abc ", camera: "front" })).toEqual({ serial: "abc", camera: "front" })
     expect(() => parseCaptureOptions({ camera: "rear" })).toThrow(/back, front, external/)
     expect(() => parseCaptureOptions({ serial: "" })).toThrow(/serial/)
+  })
+
+  test("video options default to 4 seconds and validate seconds and fps", () => {
+    expect(parseVideoOptions(undefined)).toEqual({ serial: undefined, camera: "back", seconds: 4, fps: undefined })
+    expect(parseVideoOptions({ seconds: 2.5, fps: 60, camera: "front" })).toEqual({
+      serial: undefined,
+      camera: "front",
+      seconds: 2.5,
+      fps: 60,
+    })
+    expect(() => parseVideoOptions({ seconds: 0 })).toThrow(/seconds/)
+    expect(() => parseVideoOptions({ seconds: 61 })).toThrow(/seconds/)
+    expect(() => parseVideoOptions({ seconds: "4" })).toThrow(/seconds/)
+    expect(() => parseVideoOptions({ fps: 29.97 })).toThrow(/fps/)
+    expect(() => parseVideoOptions({ camera: "rear" })).toThrow(/back, front, external/)
   })
 
   test("parses adb devices output", () => {
@@ -131,6 +148,42 @@ describe.skipIf(!realFfmpeg || process.platform === "win32")("capturePhoto", () 
     },
     SLOW,
   )
+
+  test(
+    "captureVideo keeps the MP4 and passes seconds and fps to scrcpy",
+    async () => {
+      const fakes = await makeFakes()
+      const phases: CapturePhase[] = []
+      const video = await captureVideo({ seconds: 3, fps: 60 }, { onPhase: (phase) => void phases.push(phase) }, fakes.runtime)
+
+      expect(isAbsolute(video)).toBe(true)
+      expect(dirname(dirname(video))).toBe(fakes.tempRoot)
+      expect(await readdir(dirname(video))).toEqual(["recording.mp4"])
+      expect(phases).toEqual(["checking-tools", "selecting-device", "checking-android", "recording", "complete"])
+      const args = await readLines(fakes.scrcpyLog)
+      expect(args).toContain("--time-limit=3")
+      expect(args).toContain("--camera-fps=60")
+    },
+    SLOW,
+  )
+
+  test(
+    "capturePhoto passes no fps option",
+    async () => {
+      const fakes = await makeFakes()
+      await capturePhoto({}, {}, fakes.runtime)
+      expect((await readLines(fakes.scrcpyLog)).some((arg) => arg.startsWith("--camera-fps"))).toBe(false)
+    },
+    SLOW,
+  )
+
+  test("captureVideo removes its temp directory when scrcpy fails", async () => {
+    const fakes = await makeFakes({ scrcpy: "fail" })
+    const error = await captureError(captureVideo({ fps: 120 }, {}, fakes.runtime))
+    expect(error.code).toBe("recording-failed")
+    expect(error.message).toContain("supports 120 fps")
+    expect(await readdir(fakes.tempRoot)).toEqual([])
+  })
 
   test.each([
     [{ devices: [] }, "no-device", /USB debugging/],
