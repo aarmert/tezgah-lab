@@ -21,6 +21,7 @@ if sys.version_info < (3, 11):
     sys.exit("stm32bench: Python 3.11 veya daha yeni gerekli (tomllib için).")
 
 import argparse
+import csv
 import datetime as dt
 import glob
 import hashlib
@@ -35,7 +36,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 IS_WIN = os.name == "nt"
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -1439,7 +1440,8 @@ def read_uid_for_report(prog: Programmer, sess: Session) -> dict:
         return {"uid": None, "source": f"okunamadı: {e.summary}"}
 
 
-def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "") -> dict:
+def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "",
+                 operator: str | None = None) -> dict:
     name = plan.get("name", plan_path.stem)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = cfg.runs_dir / f"{stamp}_{name}{label}"
@@ -1451,6 +1453,8 @@ def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "
 
     prog = make_programmer(cfg, board)
     meta = run_metadata_start(cfg, plan, prog)
+    if operator:
+        meta["operator"] = operator
     sess = open_session(cfg, board)
     sess.run_dir = run_dir
     results = []
@@ -1506,6 +1510,8 @@ def write_report_md(run_dir: Path, r: dict, plan: dict) -> None:
          f"- Bitiş: {m['finished'].replace('T', ' ')}",
          f"- Süre: {r['duration_s']} sn",
          f"- Plan dosyası: `{r['plan_file']}`"]
+    if m.get("operator"):
+        L.insert(3, f"- Operatör: {m['operator']}")
     if plan.get("description"):
         L.append(f"- Açıklama: {plan['description']}")
     L += ["", "## Ortam", ""]
@@ -1991,12 +1997,162 @@ def cmd_audit(cfg, args, board) -> dict:
     return audit_verify(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Üretim istasyonu: kart kart programla ve son test
+# ---------------------------------------------------------------------------
+
+STATION_CSV_FIELDS = ["zaman", "kart_no", "operator", "uid", "firmware_sha256", "sonuc", "basarisiz_adim",
+                      "rapor_klasoru", "tekrar", "denetim_hash"]
+
+BIG = {
+    "P": ["█████ ", "█   █ ", "█████ ", "█     ", "█     "],
+    "A": [" ███  ", "█   █ ", "█████ ", "█   █ ", "█   █ "],
+    "S": [" ████ ", "█     ", " ███  ", "    █ ", "████  "],
+    "F": ["█████ ", "█     ", "████  ", "█     ", "█     "],
+    "I": ["█████ ", "  █   ", "  █   ", "  █   ", "█████ "],
+    "L": ["█     ", "█     ", "█     ", "█     ", "█████ "],
+}
+
+
+def big_text(word: str, color: bool) -> str:
+    rows = ["  " + "".join(BIG[c][i] for c in word) for i in range(5)]
+    code = "\033[1;32m" if word == "PASS" else "\033[1;41;97m"
+    return "\n".join(f"{code}{r}\033[0m" if color else r for r in rows)
+
+
+def station_csv_kind(cfg: Config) -> str:
+    """Sahte kartla yapılan denemeler gerçek üretim kaydına karışmasın."""
+    return "_sim" if cfg.get("probe", "backend") == "sim" else ""
+
+
+def station_previous(cfg: Config, uid: str) -> list[str]:
+    """Bu UID'nin daha önceki istasyon kayıtlarının zamanları (aynı türdeki tüm station_*.csv dosyalarından)."""
+    found = []
+    sim = station_csv_kind(cfg) == "_sim"
+    for f in sorted(cfg.runs_dir.glob("station_*.csv")):
+        if f.stem.endswith("_sim") != sim:
+            continue
+        try:
+            with f.open(encoding="utf-8", newline="") as fh:
+                found += [row["zaman"] for row in csv.DictReader(fh) if row.get("uid") == uid]
+        except (OSError, KeyError, csv.Error):
+            continue
+    return found
+
+
+def station_csv_append(cfg: Config, row: dict) -> Path:
+    path = cfg.runs_dir / f"station_{dt.date.today():%Y%m%d}{station_csv_kind(cfg)}.csv"
+    new = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=STATION_CSV_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
+    return path
+
+
+def station_card(cfg: Config, plans: list, board, operator: str, card_no: int) -> dict:
+    """Bir kart: planları sırayla çalıştırır, ilk başarısız planda durur. Denetim satırını yazar."""
+    results = []
+    for plan_path, plan in plans:
+        if board is not None:
+            board.out.clear()
+        r = execute_plan(cfg, plan_path, plan, board, operator=operator)
+        results.append(r)
+        if not r["ok"]:
+            break
+    ok = all(r["ok"] for r in results) and len(results) == len(plans)
+    uid = next((r["meta"].get("uid") for r in results if r["meta"].get("uid")), None) or ""
+    fw = next((fw["sha256"] for r in results for fw in r["meta"]["firmware"] if fw.get("sha256")), "") or ""
+    failed = ""
+    if not ok:
+        bad = results[-1]
+        st = next((x for x in bad["steps"] if not x["ok"]), None)
+        failed = (f"{bad['plan']}: {st['step']}. adım {st['name']} ({st['error_type']})" if st
+                  else f"{bad['plan']}: {bad.get('error_type')}")
+    prev = station_previous(cfg, uid) if uid else []
+    dirs = [r["report_dir"] for r in results]
+    h = audit_append(cfg, {"cmd": "station-card", "card_no": card_no, "operator": operator, "uid": uid,
+                           "firmware_sha256": fw, "ok": ok, "failed_step": failed or None,
+                           "report_dirs": dirs, "repeat_of": prev or None})
+    for r in results:
+        stamp_audit_hash(r, h)
+    row = {"zaman": dt.datetime.now().isoformat(timespec="seconds"), "kart_no": card_no, "operator": operator,
+           "uid": uid or "okunamadı", "firmware_sha256": fw, "sonuc": "PASS" if ok else "FAIL",
+           "basarisiz_adim": failed, "rapor_klasoru": ";".join(dirs),
+           "tekrar": f"TEKRAR: {len(prev)} önceki test, ilki {prev[0]}" if prev else "", "denetim_hash": h}
+    csv_path = station_csv_append(cfg, row)
+    return {**row, "ok": ok, "csv": str(csv_path), "repeat_count": len(prev),
+            "plans": [{"plan": r["plan"], "ok": r["ok"], "summary": r["summary"], "report_dir": r["report_dir"]}
+                      for r in results]}
+
+
+def cmd_station(cfg, args, board) -> dict:
+    out = sys.stderr if args.json else sys.stdout
+    color = out.isatty() and not os.environ.get("NO_COLOR")
+
+    def say(text: str = ""):
+        print(text, file=out, flush=True)
+
+    if args.no_prompt and not args.rounds:
+        raise BenchError("invalid_args", "--no-prompt ile --rounds N de verilmeli (yoksa döngü bitmez).")
+    names = [n.strip() for n in args.plans.split(",") if n.strip()]
+    plans = [load_plan(cfg, n) for n in names]  # hepsi başta doğrulanır
+
+    operator = (args.operator or "").strip()
+    if not operator:
+        if args.no_prompt:
+            raise BenchError("invalid_args", "--no-prompt ile --operator ADI verilmeli (izlenebilirlik için).")
+        while not operator:
+            operator = input("Operatör adı: ").strip()
+    say(f"İstasyon: {cfg.get('bench', 'name')} | operatör: {operator} | planlar: {', '.join(names)}")
+
+    cards = []
+    interrupted = False
+    try:
+        while not args.rounds or len(cards) < args.rounds:
+            n = len(cards) + 1
+            if not args.no_prompt:
+                try:
+                    ans = input(f"\n[{n}] Kartı tak, Enter'a bas (çıkmak için q): ").strip().lower()
+                except EOFError:
+                    break
+                if ans == "q":
+                    break
+            else:
+                say(f"\n[{n}] kart test ediliyor...")
+            c = station_card(cfg, plans, board, operator, n)
+            cards.append(c)
+            say(big_text("PASS" if c["ok"] else "FAIL", color))
+            say(f"  UID {c['uid']}  firmware {c['firmware_sha256'][:16]}…")
+            for pr in c["plans"]:
+                say(f"  [{'PASS' if pr['ok'] else 'FAIL'}] {pr['summary']}")
+            if c["basarisiz_adim"]:
+                say(f"  Başarısız adım: {c['basarisiz_adim']}")
+            if c["repeat_count"]:
+                say(f"  !!! BU KART DAHA ÖNCE TEST EDİLDİ: {c['tekrar']}")
+    except KeyboardInterrupt:
+        interrupted = True
+        say("\nDurduruldu.")
+
+    n_pass = sum(c["ok"] for c in cards)
+    n_rep = sum(1 for c in cards if c["repeat_count"])
+    summary = (f"İstasyon: {len(cards)} kart, {n_pass} PASS, {len(cards) - n_pass} FAIL"
+               + (f", {n_rep} tekrar test" if n_rep else "") + (" (durduruldu)" if interrupted else "") + ".")
+    res = ok_result("station", summary, operator=operator, plans=names, cards=cards,
+                    csv=cards[-1]["csv"] if cards else None)
+    if len(cards) != n_pass:
+        res.update(ok=False, error_type="cards_failed",
+                   likely_causes=["Başarısız kartların rapor klasörlerine ve serial.log'larına bak"])
+    return res
+
+
 COMMANDS = {
     "doctor": (cmd_doctor, False), "ports": (cmd_ports, False), "flash": (cmd_flash, True),
     "reset": (cmd_reset, True), "send": (cmd_send, True), "read": (cmd_read, True),
     "run": (cmd_run, True), "recover": (cmd_recover, True), "monitor": (cmd_monitor, True),
     "audit": (cmd_audit, False), "halt-dump": (cmd_halt_dump, True), "mem": (cmd_mem, True),
-    "gdbserver": (cmd_gdbserver, True),
+    "gdbserver": (cmd_gdbserver, True), "station": (cmd_station, True),
 }
 
 
@@ -2036,6 +2192,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Geçerse bir de bilerek bozulmuş beklentiyle çalıştır; FAIL vermeli")
 
     sub.add_parser("recover", help="Sağlam firmware'i reset altında yükleyip kartı kurtar")
+
+    s = sub.add_parser("station", help="Üretim istasyonu: kart kart programla ve son test (q ile çık)")
+    s.add_argument("--plans", default="smoke,measure", help="Virgülle ayrılmış planlar (varsayılan: smoke,measure)")
+    s.add_argument("--operator", help="Operatör adı (verilmezse başta sorulur)")
+    s.add_argument("--rounds", type=int, default=0, help="Bu kadar karttan sonra dur (0: q'ya kadar)")
+    s.add_argument("--no-prompt", action="store_true", help="Enter bekleme (test için; --rounds ve --operator gerekir)")
 
     s = sub.add_parser("monitor", help="Canlı seri monitör (insan için)")
     s.add_argument("--seconds", type=float, default=0)
