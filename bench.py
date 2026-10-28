@@ -35,7 +35,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 IS_WIN = os.name == "nt"
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -512,6 +512,7 @@ class OpenOCD(Programmer):
 # --- Sahte kart: donanım olmadan aracı ve planları denemek için -------------
 
 SIM_UID = "0033002A3438511234363632"
+SIM_FW_VERSION = "1.2.0"
 
 
 class SimBoard:
@@ -548,7 +549,7 @@ class SimBoard:
         self.crashed = False
         self.boot_t = time.time()
         if self.image:
-            self.out.append(f"BOOT stm32bench-fw v1.0.0 reset={cause}")
+            self.out.append(f"BOOT stm32bench-fw v{SIM_FW_VERSION} reset={cause}")
         self._save()
 
     def _fault_pc(self) -> int:
@@ -571,11 +572,15 @@ class SimBoard:
         if cmd == "PING":
             self.out.append("PONG")
         elif cmd == "VER":
-            self.out.append("VER 1.0.0")
+            self.out.append(f"VER {SIM_FW_VERSION}")
         elif cmd == "TICK":
             self.out.append(f"TICK {int((time.time() - self.boot_t) * 1000)}")
         elif cmd == "UID":
             self.out.append(f"UID {SIM_UID}")
+        elif cmd == "VDD":
+            self.out.append("VDD 3000")
+        elif cmd == "TEMP":
+            self.out.append("TEMP 30.0")
         elif m := re.fullmatch(r"LED ([GORB]) (ON|OFF)", cmd):
             self.out.append(f"OK LED {m.group(1)} {m.group(2)}")
         elif m := re.fullmatch(r"BLINK (\d+)", cmd):
@@ -817,7 +822,8 @@ def open_session(cfg: Config, board: SimBoard | None) -> Session:
 # Test planı çalıştırıcı
 # ---------------------------------------------------------------------------
 
-ACTIONS = {"flash", "reset", "expect", "send", "silence", "delay"}
+ACTIONS = {"flash", "reset", "expect", "send", "silence", "delay", "clock_check"}
+TICK_PATTERN = r"^TICK (\d+)$"
 NEVER_MATCH = "__BU_SATIR_ESLESMEMELI__"
 
 
@@ -844,6 +850,12 @@ def load_plan(cfg: Config, name_or_path: str) -> tuple[Path, dict]:
         if s.get("action") not in ACTIONS:
             raise BenchError("plan_invalid", f"{p.name} adım {i}: bilinmeyen action '{s.get('action')}'",
                              [f"Geçerli olanlar: {', '.join(sorted(ACTIONS))}"])
+        if s["action"] == "clock_check":
+            rng = s.get("range")
+            if not (isinstance(rng, list) and len(rng) == 2 and all(isinstance(v, (int, float)) for v in rng)):
+                raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için range = [alt, üst] gerekli.")
+            if not isinstance(s.get("seconds"), (int, float)) or s["seconds"] <= 0:
+                raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için seconds > 0 gerekli.")
         for key in ("pattern", "expect"):
             if key in s:
                 try:
@@ -937,36 +949,85 @@ def run_step(cfg: Config, prog: Programmer, sess: Session, plan: dict, step: dic
                              ["Kart hâlâ çalışıyor, beklenen çökme/uyku olmadı"], "\n".join(lines[:10]))
         return f"{secs:g} sn boyunca çıktı yok (beklenen)."
 
+    if a == "clock_check":
+        return clock_check(cfg, sess, plan, step, timeout)
+
     pattern = step.get("pattern") if a == "expect" else step.get("expect")
     if a == "send":
         sess.drain()
         sess.send_line(step["text"])
         if not pattern:
             return f"'{step['text']}' gönderildi."
-    m, line, seen = sess.wait_for(pattern, timeout)
-    if not m:
-        where = f"'{step['text']}' komutuna " if a == "send" else ""
-        if sess.last_fault:
-            image = step.get("image") or plan.get("firmware")
-            loc = resolve_fault(cfg.resolve(image), sess.last_fault) if image else None
-            raise BenchError("target_crashed",
-                             f"{where}cevap gelmedi; kart çökmüş: {sess.last_fault}",
-                             ["Firmware HardFault'a düştü; pc adresindeki koda bak"] +
-                             ([f"Çökme yeri: {loc}"] if loc else
-                              ["pc'yi koda çevir: arm-none-eabi-addr2line -f -e firmware.elf <pc>"]),
-                             "Son seri trafik:\n" + sess.recent())
-        causes = ["Firmware bu komutu tanımıyor veya cevap formatı farklı",
-                  "Kart donmuş (sonsuz döngü) veya çökmüş",
-                  "Baud hızı yanlış (bozuk karakterler)",
-                  "TX/RX kabloları ters veya GND bağlı değil"] if not seen else \
-                 ["Cevap geldi ama beklenen desene uymadı: aşağıdaki satırlara bak"]
-        raise BenchError("expect_timeout",
-                         f"{where}{timeout:g} sn içinde /{pattern}/ desenine uyan satır gelmedi.",
-                         causes, "Son seri trafik:\n" + sess.recent())
+    m, line = expect_line(cfg, sess, plan, step, pattern, timeout,
+                          f"'{step['text']}' komutuna " if a == "send" else "")
     good, msg = check_range(m, step.get("range"))
     if not good:
         raise BenchError("value_out_of_range", f"'{line}': {msg}", ["Ölçülen değeri ve beklenen aralığı kontrol et"])
     return f"'{line}'" + (f" ({msg})" if msg else "")
+
+
+def expect_line(cfg: Config, sess: Session, plan: dict, step: dict, pattern: str, timeout: float,
+                where: str = "") -> tuple[re.Match, str]:
+    """Desene uyan satırı bekler; gelmezse çökme/zaman aşımı hatası verir."""
+    m, line, seen = sess.wait_for(pattern, timeout)
+    if m:
+        return m, line
+    if sess.last_fault:
+        image = step.get("image") or plan.get("firmware")
+        loc = resolve_fault(cfg.resolve(image), sess.last_fault) if image else None
+        raise BenchError("target_crashed",
+                         f"{where}cevap gelmedi; kart çökmüş: {sess.last_fault}",
+                         ["Firmware HardFault'a düştü; pc adresindeki koda bak"] +
+                         ([f"Çökme yeri: {loc}"] if loc else
+                          ["pc'yi koda çevir: arm-none-eabi-addr2line -f -e firmware.elf <pc>"]),
+                         "Son seri trafik:\n" + sess.recent())
+    causes = ["Firmware bu komutu tanımıyor veya cevap formatı farklı",
+              "Kart donmuş (sonsuz döngü) veya çökmüş",
+              "Baud hızı yanlış (bozuk karakterler)",
+              "TX/RX kabloları ters veya GND bağlı değil"] if not seen else \
+             ["Cevap geldi ama beklenen desene uymadı: aşağıdaki satırlara bak"]
+    raise BenchError("expect_timeout",
+                     f"{where}{timeout:g} sn içinde /{pattern}/ desenine uyan satır gelmedi.",
+                     causes, "Son seri trafik:\n" + sess.recent())
+
+
+def read_tick(cfg: Config, sess: Session, plan: dict, step: dict, timeout: float) -> tuple[int, float, float]:
+    """TICK gönderir. (kart ms, PC zamanı, gidiş-dönüş sn) döndürür.
+    PC zamanı gönderme ile cevabın gelişinin ortası: kart sayacı bu aralıkta bir yerde okundu."""
+    sess.drain()
+    t_send = time.monotonic()
+    sess.send_line("TICK")
+    m, _ = expect_line(cfg, sess, plan, step, TICK_PATTERN, timeout, "'TICK' komutuna ")
+    t_recv = time.monotonic()
+    return int(m.group(1)), (t_send + t_recv) / 2, t_recv - t_send
+
+
+def clock_check(cfg: Config, sess: Session, plan: dict, step: dict, timeout: float) -> str:
+    """Kartın ms sayacını PC'nin monotonik saatiyle karşılaştırır: oran = kart süresi / PC süresi."""
+    secs = float(step["seconds"])
+    lo, hi = step["range"]
+    tick0, pc0, rtt0 = read_tick(cfg, sess, plan, step, timeout)
+    sess.note(f"clock_check: {secs:g} sn bekleniyor")
+    time.sleep(max(0.0, pc0 + secs - time.monotonic()))
+    tick1, pc1, rtt1 = read_tick(cfg, sess, plan, step, timeout)
+    card_ms = tick1 - tick0
+    pc_ms = (pc1 - pc0) * 1000
+    # PC zamanının belirsizliği: her ölçümde gidiş-dönüşün yarısı
+    unc_ms = (rtt0 + rtt1) / 2 * 1000
+    times = f"kart {card_ms} ms, PC {pc_ms:.1f} ms (±{unc_ms:.1f} ms)"
+    if card_ms <= 0:
+        raise BenchError("target_reset", f"TICK ilerlemedi ({tick0} -> {tick1}); {times}.",
+                         ["Kart ölçüm sırasında resetlendi (seri günlükte BOOT satırına bak)",
+                          "SysTick kesmesi çalışmıyor"])
+    ratio = card_ms / pc_ms
+    msg = f"oran {ratio:.4f}: {times}"
+    if not lo <= ratio <= hi:
+        raise BenchError("value_out_of_range", f"saat oranı {ratio:.4f} beklenen aralık [{lo}, {hi}] dışında; {times}.",
+                         ["SysTick reload değeri yanlış hesaplanmış (HSI_HZ / 1000 - 1 olmalı)",
+                          "Saat kaynağı veya frekansı firmware'in varsaydığı gibi değil (HSI 16 MHz, PLL yok)",
+                          "HSI kalibrasyonu bozuk (RCC_CR HSITRIM)",
+                          "Kesmeler uzun süre kapalı kalıyor, SysTick kesmeleri kaçıyor"])
+    return f"{msg} ([{lo}, {hi}] aralığında)"
 
 
 def recover_board(cfg: Config, prog: Programmer, sess: Session) -> dict:
@@ -1002,6 +1063,10 @@ def mutate_plan(plan: dict) -> tuple[dict, int | None]:
     plan = json.loads(json.dumps(plan))
     for i in range(len(plan["step"]) - 1, -1, -1):
         s = plan["step"][i]
+        if s["action"] == "clock_check":
+            s["range"] = [-2.0, -1.0]  # oran asla negatif olamaz
+            s["seconds"] = min(float(s["seconds"]), 1.0)
+            return plan, i + 1
         key = "pattern" if s["action"] == "expect" else ("expect" if s["action"] == "send" and s.get("expect") else None)
         if key:
             s[key] = s[key] + NEVER_MATCH

@@ -1,0 +1,39 @@
+# Dahili ölçüm testi: ek cihaz olmadan kartın kendi ölçümleri.
+# VDD: VREFINT + fabrika kalibrasyonu ile besleme gerilimi (Discovery 3,0 V ile çalışır).
+# TEMP: dahili sıcaklık sensörü (çip sıcaklığı, oda sıcaklığından birkaç derece yüksek olur).
+# clock_check: kartın ms sayacı PC'nin saatiyle karşılaştırılır (SysTick/HSI doğru mu).
+name = "measure"
+description = "VDD ve TEMP dahili ölçümleri aralıkta mı, kartın saati PC saatiyle uyuşuyor mu kontrol et."
+firmware = "firmware/build/stm32bench-fw.elf"
+
+[[step]]
+action = "flash"
+
+[[step]]
+action = "reset"
+
+[[step]]
+name = "açılış mesajı"
+action = "expect"
+pattern = '^BOOT stm32bench-fw v\d+\.\d+\.\d+'
+timeout = 3
+
+[[step]]
+name = "besleme gerilimi (mV)"
+action = "send"
+text = "VDD"
+expect = '^VDD (\d+)$'
+range = [2850, 3150]
+
+[[step]]
+name = "çip sıcaklığı (°C)"
+action = "send"
+text = "TEMP"
+expect = '^TEMP (-?\d+(?:\.\d+)?)$'
+range = [15, 60]
+
+[[step]]
+name = "kart saati / PC saati"
+action = "clock_check"
+seconds = 5
+range = [0.97, 1.03]
