@@ -7,9 +7,11 @@
  *
  * Komutlar (satır sonu \r\n veya \n):
  *   PING            -> PONG
- *   VER             -> VER 1.0.0
+ *   VER             -> VER 1.2.0
  *   TICK            -> TICK <açılıştan beri ms>
  *   UID             -> UID <96 bit benzersiz kimlik, hex>
+ *   VDD             -> VDD <mV>      (VREFINT + VREFINT_CAL ile ölçülen VDDA)
+ *   TEMP            -> TEMP <°C>     (dahili sıcaklık sensörü, TS_CAL1/TS_CAL2, VDDA düzeltmeli, 0,1 °C)
  *   LED <G|O|R|B> <ON|OFF> -> OK LED x ON/OFF   (G'ye dokunmak heartbeat'i kapatır)
  *   BLINK <1-20>    -> OK BLINK n   (yeşil LED n Hz yanıp söner; kamera testi için)
  *   CRASH           -> OK CRASH, ardından bilerek HardFault (test için)
@@ -18,12 +20,12 @@
  * Mavi kullanıcı butonu (PA0): her basışta mavi LED (PD15) açılır/kapanır,
  * seri porta BTN <ON|OFF> <basış sayısı> basılır.
  *
- * Açılışta: BOOT stm32bench-fw v1.0.0 reset=<sebep>
+ * Açılışta: BOOT stm32bench-fw v1.2.0 reset=<sebep>
  * Çökünce:  HARDFAULT pc=0x........ lr=0x........ cfsr=0x........ hfsr=0x........
  */
 #include <stdint.h>
 
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.2.0"
 
 /* ---- Register adresleri (STM32F4) ---- */
 #define REG(addr) (*(volatile uint32_t *)(addr))
@@ -31,6 +33,7 @@
 #define RCC_BASE     0x40023800u
 #define RCC_AHB1ENR  REG(RCC_BASE + 0x30)
 #define RCC_APB1ENR  REG(RCC_BASE + 0x40)
+#define RCC_APB2ENR  REG(RCC_BASE + 0x44)
 #define RCC_CSR      REG(RCC_BASE + 0x74)
 
 #define GPIOA_BASE   0x40020000u
@@ -50,6 +53,33 @@
 #define SR_RXNE      (1u << 5)
 #define SR_TXE       (1u << 7)
 #define SR_ORE       (1u << 3)
+
+/* ADC1 ve ortak ADC register'ları (RM0090, CMSIS stm32f407xx.h) */
+#define ADC1_BASE    0x40012000u
+#define ADC_SR       REG(ADC1_BASE + 0x00)
+#define ADC_CR1      REG(ADC1_BASE + 0x04)
+#define ADC_CR2      REG(ADC1_BASE + 0x08)
+#define ADC_SMPR1    REG(ADC1_BASE + 0x0C)
+#define ADC_SQR1     REG(ADC1_BASE + 0x2C)
+#define ADC_SQR3     REG(ADC1_BASE + 0x34)
+#define ADC_DR       REG(ADC1_BASE + 0x4C)
+#define ADC_CCR      REG(0x40012304u)
+#define ADC_SR_EOC   (1u << 1)
+#define ADC_CR2_ADON (1u << 0)
+#define ADC_CR2_SWSTART (1u << 30)
+#define ADC_CCR_TSVREFE (1u << 23)
+
+/* STM32F40x/41x: sıcaklık sensörü ADC1_IN16, VREFINT ADC1_IN17
+ * (F411/F42x'te sensör IN18'dedir ve VBAT ile paylaşılır; bu kod F407 içindir). */
+#define ADC_CH_TEMP     16u
+#define ADC_CH_VREFINT  17u
+#define ADC_SAMPLES     16u
+
+/* Fabrika kalibrasyonu (sistem belleği, 16 bit, 30 °C / 110 °C, VDDA = 3,3 V'ta ölçülmüş) */
+#define VREFINT_CAL  (*(volatile uint16_t *)0x1FFF7A2Au)
+#define TS_CAL1      (*(volatile uint16_t *)0x1FFF7A2Cu)
+#define TS_CAL2      (*(volatile uint16_t *)0x1FFF7A2Eu)
+#define CAL_VDDA_MV  3300u
 
 #define SYST_CSR     REG(0xE000E010u)
 #define SYST_RVR     REG(0xE000E014u)
@@ -80,7 +110,8 @@ static int g_heartbeat = 1;
 static void clocks_init(void) {
     RCC_AHB1ENR |= (1u << 0) | (1u << 3);   /* GPIOA, GPIOD */
     RCC_APB1ENR |= (1u << 17);              /* USART2 */
-    (void)RCC_APB1ENR;
+    RCC_APB2ENR |= (1u << 8);               /* ADC1 */
+    (void)RCC_APB2ENR;
 }
 
 static void gpio_init(void) {
@@ -121,6 +152,58 @@ static void systick_init(void) {
 
 void SysTick_Handler(void) { g_ms++; }
 
+/* ADC1: PCLK2 = 16 MHz, ADCPRE = /2 -> 8 MHz ADC saati (en fazla 36 MHz).
+ * Kanal 16 ve 17 için 480 çevrim örnekleme = 60 µs (datasheet: dahili kanallarda en az 10 µs). */
+static void adc_init(void) {
+    ADC_CCR = (ADC_CCR & ~(3u << 16)) | ADC_CCR_TSVREFE;   /* ADCPRE=/2, sensör ve VREFINT açık */
+    ADC_CR1 = 0;                                          /* 12 bit, tarama yok */
+    ADC_SMPR1 = (ADC_SMPR1 & ~((7u << 18) | (7u << 21))) | (7u << 18) | (7u << 21);
+    ADC_SQR1 = 0;                                         /* dizide 1 dönüşüm */
+    ADC_CR2 = ADC_CR2_ADON;
+    /* tSTART (sensör/VREFINT) ve ADC tSTAB en fazla 10 µs: 2 ms bekle */
+    uint32_t t0 = g_ms;
+    while ((g_ms - t0) < 2u) { }
+}
+
+static uint32_t adc_read(uint32_t ch) {
+    ADC_SQR3 = ch;
+    (void)ADC_DR;                         /* eski EOC'yi temizle */
+    ADC_CR2 |= ADC_CR2_SWSTART;
+    while (!(ADC_SR & ADC_SR_EOC)) { }
+    return ADC_DR & 0xFFFu;               /* DR okumak EOC'yi temizler */
+}
+
+static uint32_t adc_sum(uint32_t ch) {
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < ADC_SAMPLES; i++) sum += adc_read(ch);
+    return sum;
+}
+
+/* İşaretli tamsayı bölmesi, en yakına yuvarlar (payda > 0) */
+static int64_t div_round(int64_t num, int64_t den) {
+    return (num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den);
+}
+
+/* VDDA = 3300 mV * VREFINT_CAL / VREFINT_okunan (ortalama) */
+static uint32_t vdda_mv(void) {
+    uint32_t vref_sum = adc_sum(ADC_CH_VREFINT);
+    if (!vref_sum) return 0;
+    return (uint32_t)div_round((int64_t)CAL_VDDA_MV * VREFINT_CAL * ADC_SAMPLES, vref_sum);
+}
+
+/* Sıcaklık, 0,1 °C biriminde. Sensör ham değeri kalibrasyondaki 3,3 V'a ölçeklenir:
+ *   ts_33 = ts * VDDA / 3300 = ts * VREFINT_CAL / vref
+ *   T = 30 + (110 - 30) * (ts_33 - TS_CAL1) / (TS_CAL2 - TS_CAL1)
+ * Ortalamalar toplam olarak tutulur, N payda/paydada sadeleşir. */
+static int32_t temp_x10(void) {
+    uint32_t vref_sum = adc_sum(ADC_CH_VREFINT);
+    uint32_t ts_sum = adc_sum(ADC_CH_TEMP);
+    int32_t span = (int32_t)TS_CAL2 - (int32_t)TS_CAL1;
+    if (!vref_sum || span <= 0) return INT32_MIN;
+    int64_t num = 800 * ((int64_t)ts_sum * VREFINT_CAL - (int64_t)TS_CAL1 * vref_sum);
+    return 300 + (int32_t)div_round(num, (int64_t)span * vref_sum);
+}
+
 /* ---- UART yardımcıları ---- */
 static void uart_putc(char c) {
     while (!(USART_SR & SR_TXE)) { }
@@ -144,6 +227,13 @@ static void uart_u32(uint32_t v) {
 }
 
 static void uart_nl(void) { uart_puts("\r\n"); }
+
+/* 0,1 birimli işaretli değeri "-12.3" biçiminde yaz */
+static void uart_fixed1(int32_t v) {
+    uint32_t u = (uint32_t)v;
+    if (v < 0) { uart_putc('-'); u = 0u - u; }
+    uart_u32(u / 10u); uart_putc('.'); uart_putc((char)('0' + u % 10u));
+}
 
 /* ---- Küçük string yardımcıları (libc yok) ---- */
 static char upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
@@ -235,6 +325,14 @@ static void handle_command(char *line) {
     } else if (str_eq(line, "UID")) {
         uart_puts("UID ");
         for (uint32_t i = 0; i < 3; i++) uart_hex32(REG(UID_BASE + 4u * i));
+    } else if (str_eq(line, "VDD")) {
+        uint32_t mv = vdda_mv();
+        if (mv) { uart_puts("VDD "); uart_u32(mv); }
+        else    { uart_puts("ERR adc"); }
+    } else if (str_eq(line, "TEMP")) {
+        int32_t t = temp_x10();
+        if (t != INT32_MIN) { uart_puts("TEMP "); uart_fixed1(t); }
+        else                { uart_puts("ERR calibration"); }
     } else if (starts_with(line, "LED ") && line[4] && line[5] == ' ') {
         int idx = led_index(line[4]);
         const char *state = &line[6];
@@ -304,6 +402,7 @@ int main(void) {
     gpio_init();
     uart_init();
     systick_init();
+    adc_init();
 
     uart_nl();
     uart_puts("BOOT stm32bench-fw v" FW_VERSION " reset=");
