@@ -48,3 +48,12 @@ plans_dir_only = false
 [paths]
 plans_dir = "plans"
 runs_dir = "runs"
+
+# [camera]
+# cam_blink adımı için telefon kamerası (android-camera-tool). Hepsi isteğe bağlı, varsayılanlar:
+# tool_dir = "~/android-camera-tool"
+# bun = "~/.bun/bin/bun"
+# serial = ""          # boşsa tek bağlı adb cihazı kullanılır
+# camera = "back"
+# fps = 30
+# roi = [733, 778, 30, 30]   # LED bölgesi [x, y, genişlik, yükseklik]; verilmezse otomatik bulunur

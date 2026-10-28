@@ -13,6 +13,7 @@ kullanabilir. Linux ve Windows'ta aynen çalışır.
 | `plans/smoke.toml` | Temel test: yükle, açılış mesajı, PING/VER/TICK/UID/LED |
 | `plans/crash_recovery.toml` | Kartı bilerek çökertir, raporu okur, resetle geri getirir |
 | `plans/measure.toml` | Dahili ölçümler: VDD (VREFINT), çip sıcaklığı, kart saati / PC saati oranı |
+| `plans/camera_blink.toml` | Telefon kamerasıyla yeşil LED'in frekansı (BLINK 1/2/4) ve LED G ON'da sabit yanması |
 | `firmware/` | Kartta çalışan küçük test firmware'i ve `build.py` (make gerekmez) |
 | `setup_ubuntu.sh` | Ubuntu'da her şeyi kuran script |
 | `CLAUDE.md` | Claude'un bu klasörde uyacağı kurallar |
@@ -120,6 +121,35 @@ range = [0.97, 1.03]        # kart süresi / PC süresi (time.monotonic) bu aral
 
 `clock_check` sonucunda oran, iki süre ve PC ölçümünün belirsizliği (TICK gidiş-dönüşünün
 yarısı) yazılır. `--verify-can-fail` son beklenti adımı `clock_check` ise onun aralığını bozar.
+
+### Kamera ile LED ölçümü (`cam_blink`)
+
+```toml
+[[step]]
+action = "cam_blink"        # telefonla video çek, LED'in yanıp sönme frekansını ölç
+seconds = 4                 # kayıt süresi
+range = [1.8, 2.2]          # Hz
+# duty_range = [0.4, 0.6]   # isteğe bağlı doluluk aralığı
+# skip_s = 0.5              # baştaki kareleri atla (pozlama/odak otursun)
+
+[[step]]
+action = "cam_blink"        # LED sabit mi? Bölge ve eşik önceki cam_blink adımından alınır
+seconds = 3
+steady = "on"               # veya "off"
+```
+
+- Video `android-camera-tool` (`scripts/record-video.ts`, scrcpy) ile çekilir. Kare zamanları videonun
+  kendi zaman damgalarından alınır (ffprobe).
+- LED bölgesi: kareler boyunca parlaklığı en çok değişen 30×30 piksellik yer. LED'in parlak bir yüzeydeki
+  yansıması daha çok değişiyorsa onu seçer. Frekans aynı çıkar ama işaretli kareye bak. Sabitlemek için
+  `bench.toml`'a `[camera] roi = [x, y, genişlik, yükseklik]` ekle.
+- Karar sayılara göre verilir: eşik = parlaklığın %5 ve %95 değerlerinin ortası, geçişler histerezisli,
+  geçiş anı iki kare arasında doğrusal ara değerle bulunur. Frekans yükselen ve düşen kenarlardan hesaplanır.
+- Ölçülen frekans kare hızının dörtte birinden büyükse mesaj `UYARI:` ile başlar. Kare hızının yarısını
+  aşan frekanslar katlanır, yani daha düşük görünür.
+- Her adım rapor klasörüne `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (bölge işaretli, diğer adaylar sarı
+  daire) ve `cam_stepNN.csv` (zaman, parlaklık) yazar.
+- OpenCV ve NumPy gerekir: `sudo apt install python3-opencv python3-numpy`. `--sim` ile sentetik video kullanılır.
 
 Desenler regex'tir. TOML'da tek tırnak kullan, ters eğik çizgi kaçırmaya gerek kalmaz.
 
