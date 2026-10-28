@@ -67,6 +67,7 @@ yeniden başlatınca başka cihaza kayabilir, by-id ismi kaymaz.
 | `python3 bench.py run smoke --verify-can-fail` | Ayrıca bilerek bozulmuş haliyle çalıştırır, FAIL vermeli |
 | `python3 bench.py recover` | Sağlam firmware'i reset altında yükleyip kartı kurtarır |
 | `python3 bench.py audit` | Denetim kaydının değiştirilmediğini kontrol eder |
+| `python3 bench.py station` | Üretim istasyonu: operatör adını sorar, her kart için smoke+measure, büyük PASS/FAIL, `q` ile çık |
 | `python3 bench.py halt-dump` | Çekirdeği durdurur; register, hata register'ları (açıklamalı), çökme anındaki pc ve yığını gösterir, devam ettirir |
 | `python3 bench.py mem 0x40020C14 --count 4` | Bellek/çevre birimi register'ı okur (sadece okuma; option byte bölgesi kapalı) |
 | `python3 bench.py gdbserver` | GDB sunucusu açar (insan için, Ctrl+C ile kapanır; `sudo apt install gdb-multiarch`) |
@@ -81,6 +82,25 @@ Her `run` sonrası `runs/<tarih>_<plan>/` klasöründe `report.md`, `result.json
 ve zaman damgalı `serial.log` oluşur. Bir test başarısız olursa araç kartı önce
 resetle, olmazsa sağlam firmware'i yeniden yükleyerek kendisi kurtarmaya çalışır.
 Kart çökerse HARDFAULT satırındaki adresi kaynak koddaki fonksiyon ve satıra çevirir.
+
+## Üretim istasyonu (`station`)
+
+```bash
+python3 bench.py station                              # operatörü sorar, her kartta Enter bekler, q ile çıkar
+python3 bench.py station --plans smoke,measure,camera_blink
+python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # test/otomasyon için
+```
+
+- Her kart için planlar sırayla çalışır. İlk başarısız planda durulur, sonuç büyük PASS/FAIL ile gösterilir.
+- Her kart için denetim kaydına (`runs/audit.jsonl`) bir `station-card` satırı yazılır. Bu satırın
+  hash'i o kartın tüm rapor başlıklarına işlenir. Başlıkta ayrıca operatör, UID, firmware SHA-256,
+  bench.py/OpenOCD sürümü, sunucu adı, başlangıç ve bitiş zamanı bulunur.
+- `runs/station_<tarih>.csv`: kart başına bir satır. Sütunlar: zaman, kart_no, operator, uid,
+  firmware_sha256, sonuc, basarisiz_adim, rapor_klasoru, tekrar, denetim_hash.
+- Aynı UID daha önce test edildiyse ekranda `!!! BU KART DAHA ÖNCE TEST EDİLDİ` yazar, CSV'nin `tekrar`
+  sütunu dolar. Tüm `station_*.csv` dosyalarına bakılır.
+- `--sim` ile yapılan denemeler `station_<tarih>_sim.csv` dosyasına yazılır, gerçek kayda karışmaz.
+- İstasyon açık kaldığı sürece tezgah kilidini tutar. Bu sürede başka bench.py komutları bekler.
 
 ## Test planı yazmak
 
