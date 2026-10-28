@@ -1,0 +1,50 @@
+# stm32bench ayar dosyası
+# Bu dosyayı "bench.toml" adıyla kopyala ve kendi bilgisayarına göre düzenle.
+# Göreli yollar bu dosyanın bulunduğu klasöre göredir.
+
+[bench]
+name = "discovery-1"
+
+[probe]
+# "openocd" (Ubuntu'da apt ile kurulur), "cubeprog" (STM32CubeProgrammer CLI) veya "sim" (sahte kart)
+backend = "openocd"
+
+# Bulunamazsa tam yolu ver:
+# Windows: cubeprog_path = 'C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe'
+# Linux:   cubeprog_path = "/opt/st/stm32cubeclt_1.22.0/STM32CubeProgrammer/bin/STM32_Programmer_CLI"
+
+# Birden fazla ST-Link takılıysa hangisi (bench.py doctor seri numarasını gösterir):
+# serial_number = "066DFF..."
+
+# NORMAL çoğu durumda yeter. Kurtarma her zaman reset altında (UR) bağlanır.
+connect_mode = "NORMAL"
+timeout_s = 90
+
+# OpenOCD ayarları (STM32F4 Discovery için bunlar doğru)
+openocd_interface = "interface/stlink.cfg"
+openocd_target = "target/stm32f4x.cfg"
+
+[serial]
+# USB-TTL'in portu. "python bench.py ports" ile bul.
+# Linux: kalıcı isim önerilir, ör. "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0"
+#        (yoksa "/dev/ttyUSB0")
+# Windows: "COM5"
+port = "/dev/ttyUSB0"
+baud = 115200
+
+[recovery]
+# Kart kilitlenirse reset altında yüklenecek, çalıştığı bilinen firmware
+golden_image = "firmware/build/stm32bench-fw.elf"
+# Kartın açıldığını gösteren satır (regex)
+banner = '^BOOT '
+banner_timeout_s = 3
+
+[permissions]
+allow_flash = true
+allow_reset = true
+# true yapınca sadece plans/ klasöründeki planlar çalıştırılabilir (ajan kendi planını uyduramaz)
+plans_dir_only = false
+
+[paths]
+plans_dir = "plans"
+runs_dir = "runs"
