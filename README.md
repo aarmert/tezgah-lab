@@ -12,6 +12,7 @@ kullanabilir. Linux ve Windows'ta aynen çalışır.
 | `bench.example.toml` | Ayar şablonu (`bench.toml` olarak kopyalanır) |
 | `plans/smoke.toml` | Temel test: yükle, açılış mesajı, PING/VER/TICK/UID/LED |
 | `plans/crash_recovery.toml` | Kartı bilerek çökertir, raporu okur, resetle geri getirir |
+| `plans/measure.toml` | Dahili ölçümler: VDD (VREFINT), çip sıcaklığı, kart saati / PC saati oranı |
 | `firmware/` | Kartta çalışan küçük test firmware'i ve `build.py` (make gerekmez) |
 | `setup_ubuntu.sh` | Ubuntu'da her şeyi kuran script |
 | `CLAUDE.md` | Claude'un bu klasörde uyacağı kurallar |
@@ -110,18 +111,28 @@ seconds = 1
 [[step]]
 action = "delay"
 seconds = 0.5
+
+[[step]]
+action = "clock_check"      # TICK, PC'de 5 sn bekle, tekrar TICK
+seconds = 5
+range = [0.97, 1.03]        # kart süresi / PC süresi (time.monotonic) bu aralıkta olmalı
 ```
+
+`clock_check` sonucunda oran, iki süre ve PC ölçümünün belirsizliği (TICK gidiş-dönüşünün
+yarısı) yazılır. `--verify-can-fail` son beklenti adımı `clock_check` ise onun aralığını bozar.
 
 Desenler regex'tir. TOML'da tek tırnak kullan, ters eğik çizgi kaçırmaya gerek kalmaz.
 
 ## Test firmware komutları
 
-`PING`, `VER`, `TICK`, `UID`, `LED <G|O|R|B> <ON|OFF>`, `BLINK <1-20>`
+`PING`, `VER`, `TICK`, `UID`, `VDD` (besleme, mV), `TEMP` (çip sıcaklığı, °C, 0,1 hassasiyet),
+`LED <G|O|R|B> <ON|OFF>`, `BLINK <1-20>`
 (yeşil LED'in yanıp sönme hızı, kamera testi için), `CRASH` (bilerek HardFault),
-`RESET`. Açılışta `BOOT stm32bench-fw v1.0.0 reset=<sebep>` basar. Yeşil LED
+`RESET`. Açılışta `BOOT stm32bench-fw v1.2.0 reset=<sebep>` basar. Yeşil LED
 ana döngü dönerken 2 Hz yanıp söner; kart donarsa durur.
 
-Firmware STM32F407G-DISC1 ve STM32F411E-DISCO içindir (LED'ler PD12-PD15).
+Firmware STM32F407G-DISC1 ve STM32F411E-DISCO içindir (LED'ler PD12-PD15). `TEMP` sadece
+F407'de doğrudur: F411'de sıcaklık sensörü ADC kanal 16 değil 18'dedir.
 Saat olarak dahili 16 MHz HSI kullanır, PLL ayarı yoktur.
 
 ## Claude ile kullanım
