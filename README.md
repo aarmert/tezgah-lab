@@ -56,6 +56,25 @@ scrcpy --serial=<serial> --video-source=camera --camera-facing=<camera> --no-aud
 
 ffmpeg then takes a frame from the last half second of the recording, after auto-exposure and focus have settled.
 
+### Keeping a video
+
+`captureVideo` records the camera and keeps the MP4 instead of extracting a photo. It accepts the same `serial` and `camera`, plus:
+
+| Input | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `seconds` | number, 1 to 60 | `4` | Recording length (`--time-limit`). |
+| `fps` | integer, 1 to 240 | camera default | Camera frame rate (`--camera-fps`). The camera must support it; `scrcpy --list-camera-sizes` lists rates. |
+
+It returns the absolute path of `recording.mp4` in a new temp directory, and the caller owns that file. The frame timestamps in the MP4 are the device capture times. The phases are the same as for a photo, without `extracting`.
+
+From the shell, the last stdout line is the MP4 path:
+
+```sh
+bun scripts/record-video.ts <serial> back 4 30     # serial "" picks the only attached device
+```
+
+`capturePhoto` is unchanged: it records 2 seconds without `--camera-fps`, then deletes the recording.
+
 ### Using the module directly
 
 ```ts
