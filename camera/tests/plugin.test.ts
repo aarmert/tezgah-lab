@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import plugin from "../.opencode/plugins/android-camera/index.ts"
+import plugin from "../../.opencode/plugins/android-camera/index.ts"
 
 test("registers android_take_photo with an optional serial and a camera enum", async () => {
   const added: any[] = []

@@ -1,0 +1,9 @@
+{
+  "name": "tezgah",
+  "private": true,
+  "workspaces": ["camera"],
+  "scripts": {
+    "test": "cd camera && bun test",
+    "typecheck": "cd camera && bun run typecheck"
+  }
+}

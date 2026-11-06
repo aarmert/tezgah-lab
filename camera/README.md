@@ -1,12 +1,10 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+# tezgah camera tool
 
-# autonomous-lab-test
-
-Created in [T3 Code](https://t3.codes).
+The phone camera part of [tezgah](../README.md). `bench.py` runs `scripts/record-video.ts` from this folder for the `cam_blink` step.
 
 ## Android camera photo tool
 
-`.opencode/plugins/android-camera/` is an OpenCode plugin. OpenCode loads it automatically from this repository. It adds one tool, `android_take_photo`, which records two seconds of an Android device's camera with scrcpy and saves one frame as a JPEG.
+`.opencode/plugins/android-camera/` in the tezgah root is an OpenCode plugin. OpenCode loads it automatically when started in the tezgah root. It adds one tool, `android_take_photo`, which records two seconds of an Android device's camera with scrcpy and saves one frame as a JPEG.
 
 The tool returns only the absolute path of that JPEG, for example `/var/folders/.../T/opencode-android-camera-Ab12Cd/photo.jpg`. The photo stays on this computer. Nothing is uploaded. The file is left in the OS temp directory for the caller or the OS to clean up.
 
@@ -23,6 +21,8 @@ The JPEG is a video frame, capped at 1920 pixels on the long side. It does not h
 All three commands must be on `PATH`. The tool checks for them before it touches the device and names every missing one.
 
 ### Install
+
+Run this once in the tezgah root, not here. It installs this folder's dependencies into the root `node_modules`, where the OpenCode plugin also finds them:
 
 ```sh
 bun install
@@ -84,6 +84,8 @@ const path = await capturePhoto({ camera: "back" }, { signal: AbortSignal.timeou
 ```
 
 ### Tests
+
+Run these in this folder:
 
 ```sh
 bun test

@@ -1,7 +1,7 @@
-# stm32bench
+# tezgah
 
 STM32F4 Discovery kartını bilgisayardan yükleyen, resetleyen, seri porttan
-konuşan ve test planı çalıştıran Python aracı. Hem sen hem Claude (`--json` ile)
+konuşan, Android telefon kamerasıyla LED'lere bakan ve test planı çalıştıran araç. Hem sen hem Claude (`--json` ile)
 kullanabilir. Linux ve Windows'ta aynen çalışır.
 
 ## İçindekiler
@@ -15,8 +15,11 @@ kullanabilir. Linux ve Windows'ta aynen çalışır.
 | `plans/measure.toml` | Dahili ölçümler: VDD (VREFINT), çip sıcaklığı, kart saati / PC saati oranı |
 | `plans/camera_blink.toml` | Telefon kamerasıyla yeşil LED'in frekansı (BLINK 1/2/4) ve LED G ON'da sabit yanması |
 | `firmware/` | Kartta çalışan küçük test firmware'i ve `build.py` (make gerekmez) |
+| `camera/` | Telefon kamerası aracı (Bun + TypeScript, scrcpy). Ayrıntı: [`camera/README.md`](camera/README.md) |
+| `.opencode/plugins/android-camera/` | OpenCode için `android_take_photo` aracı |
+| `docs/raporlar/` | Deneme raporları |
 | `setup_ubuntu.sh` | Ubuntu'da her şeyi kuran script |
-| `CLAUDE.md` | Claude'un bu klasörde uyacağı kurallar |
+| `AGENTS.md` | Ajanların bu klasörde uyacağı kurallar (`CLAUDE.md` bunu içe aktarır) |
 
 ## Bağlantı
 
@@ -37,9 +40,9 @@ Discovery'deki CN3 jumperları takılı olmalı (ST-Link karta bağlı modu).
 
 ```bash
 # Windows'tan sunucuya kopyala (kendi kullanıcı adın ve IP'nle)
-scp stm32bench.zip kullanici@sunucu-ip:~
+scp tezgah.zip kullanici@sunucu-ip:~
 ssh kullanici@sunucu-ip
-sudo apt install -y unzip && unzip stm32bench.zip && cd stm32bench
+sudo apt install -y unzip && unzip tezgah.zip && cd tezgah
 bash setup_ubuntu.sh
 # çıkış yapıp tekrar gir, sonra:
 python3 bench.py ports        # USB-TTL'in adını bul, bench.toml'a yaz
@@ -158,7 +161,7 @@ seconds = 3
 steady = "on"               # veya "off"
 ```
 
-- Video `android-camera-tool` (`scripts/record-video.ts`, scrcpy) ile çekilir. Kare zamanları videonun
+- Video `camera/` aracı (`camera/scripts/record-video.ts`, scrcpy) ile çekilir. Kare zamanları videonun
   kendi zaman damgalarından alınır (ffprobe).
 - LED bölgesi: kareler boyunca parlaklığı en çok değişen 30×30 piksellik yer. LED'in parlak bir yüzeydeki
   yansıması daha çok değişiyorsa onu seçer. Frekans aynı çıkar ama işaretli kareye bak. Sabitlemek için
@@ -169,7 +172,8 @@ steady = "on"               # veya "off"
   aşan frekanslar katlanır, yani daha düşük görünür.
 - Her adım rapor klasörüne `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (bölge işaretli, diğer adaylar sarı
   daire) ve `cam_stepNN.csv` (zaman, parlaklık) yazar.
-- OpenCV ve NumPy gerekir: `sudo apt install python3-opencv python3-numpy`. `--sim` ile sentetik video kullanılır.
+- OpenCV ve NumPy gerekir: `sudo apt install python3-opencv python3-numpy`. Kamera aracı için
+  adb, scrcpy 2.5+, ffmpeg ve [Bun](https://bun.sh) gerekir; bir kez kökte `bun install` çalıştır. `--sim` ile sentetik video kullanılır.
 
 Desenler regex'tir. TOML'da tek tırnak kullan, ters eğik çizgi kaçırmaya gerek kalmaz.
 
@@ -185,10 +189,10 @@ Firmware STM32F407G-DISC1 ve STM32F411E-DISCO içindir (LED'ler PD12-PD15). `TEM
 F407'de doğrudur: F411'de sıcaklık sensörü ADC kanal 16 değil 18'dedir.
 Saat olarak dahili 16 MHz HSI kullanır, PLL ayarı yoktur.
 
-## Claude ile kullanım
+## Ajanla kullanım (Claude, OpenCode)
 
-Bu klasörde `claude` başlat. `CLAUDE.md` kuralları otomatik okunur: karta sadece
-`bench.py` ile dokunur, test dosyalarını değiştiremez, option byte'lara dokunmaz.
+Bu klasörde `claude` veya `opencode` başlat. Kurallar `AGENTS.md` içinde; Claude bunu `CLAUDE.md`
+üzerinden okur. Ajan karta sadece `bench.py` ile dokunur, test dosyalarını değiştiremez, option byte'lara dokunmaz.
 
 Testleri Claude'un değiştirmesini kesin engellemek için:
 
@@ -197,8 +201,6 @@ chmod -R a-w plans bench.toml bench.py
 ```
 
 ve `bench.toml` içinde `plans_dir_only = true` yap.
-
-Kamera fotoğraf aracını kullanıyorsan nasıl çağrılacağını `CLAUDE.md` sonuna bir satır olarak ekle.
 
 ## Windows'ta
 

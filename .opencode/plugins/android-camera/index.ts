@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin"
-import { CAMERAS, capturePhoto, parseCaptureOptions } from "../../../src/capture.ts"
+import { CAMERAS, capturePhoto, parseCaptureOptions } from "../../../camera/src/capture.ts"
 
 export default Plugin.define({
   id: "android-camera",

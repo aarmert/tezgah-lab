@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stm32bench - STM32 test tezgahi araci (Windows + Linux)
+tezgah - STM32 test tezgahi araci (Windows + Linux)
 
 Bir kartı yükler, resetler, seri porttan konuşur ve test planlarını
 çalıştırır. Hem insan hem de bir yapay zeka ajanı (--json ile) kullanabilir.
@@ -18,7 +18,7 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 11):
-    sys.exit("stm32bench: Python 3.11 veya daha yeni gerekli (tomllib için).")
+    sys.exit("tezgah: Python 3.11 veya daha yeni gerekli (tomllib için).")
 
 import argparse
 import csv
@@ -36,7 +36,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 IS_WIN = os.name == "nt"
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -111,9 +111,9 @@ DEFAULT_CONFIG = {
                  "banner": "^BOOT ", "banner_timeout_s": 3},
     "permissions": {"allow_flash": True, "allow_reset": True, "plans_dir_only": False},
     "paths": {"plans_dir": "plans", "runs_dir": "runs"},
-    # cam_blink: android-camera-tool ile video. roi = [x, y, genişlik, yükseklik] (piksel) verilirse
+    # cam_blink: camera/ (telefon kamerası aracı) ile video. roi = [x, y, genişlik, yükseklik] (piksel) verilirse
     # LED bölgesi otomatik aranmaz.
-    "camera": {"tool_dir": "~/android-camera-tool", "bun": "~/.bun/bin/bun", "serial": "",
+    "camera": {"tool_dir": "camera", "bun": "~/.bun/bin/bun", "serial": "",
                "camera": "back", "fps": 30, "roi": None},
 }
 
@@ -1082,7 +1082,7 @@ def clock_check(cfg: Config, sess: Session, plan: dict, step: dict, timeout: flo
 # ---------------------------------------------------------------------------
 
 def record_video(cfg: Config, prog: Programmer, seconds: float, dest: Path) -> None:
-    """Videoyu çekip dest'e taşır. Gerçek kartta android-camera-tool, sim'de ffmpeg ile sentetik video."""
+    """Videoyu çekip dest'e taşır. Gerçek kartta camera/ aracı, sim'de ffmpeg ile sentetik video."""
     if isinstance(prog, SimProgrammer):
         prog.board.write_video(dest, seconds)
         return
@@ -2161,7 +2161,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="bench.toml yolu (varsayılan: bench.py'nin yanındaki)")
     p.add_argument("--json", action="store_true", help="Sonucu JSON olarak yaz (ajanlar için)")
     p.add_argument("--sim", action="store_true", help="Donanım olmadan sahte kartla çalış")
-    p.add_argument("--version", action="version", version=f"stm32bench {VERSION}")
+    p.add_argument("--version", action="version", version=f"tezgah {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("doctor", help="Kurulumu ve bağlantıları kontrol et")

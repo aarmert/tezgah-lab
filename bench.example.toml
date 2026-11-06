@@ -1,4 +1,4 @@
-# stm32bench ayar dosyası
+# tezgah ayar dosyası
 # Bu dosyayı "bench.toml" adıyla kopyala ve kendi bilgisayarına göre düzenle.
 # Göreli yollar bu dosyanın bulunduğu klasöre göredir.
 
@@ -50,8 +50,8 @@ plans_dir = "plans"
 runs_dir = "runs"
 
 # [camera]
-# cam_blink adımı için telefon kamerası (android-camera-tool). Hepsi isteğe bağlı, varsayılanlar:
-# tool_dir = "~/android-camera-tool"
+# cam_blink adımı için telefon kamerası (camera/ klasörü). Hepsi isteğe bağlı, varsayılanlar:
+# tool_dir = "camera"        # göreli yol bu dosyanın klasörüne göre
 # bun = "~/.bun/bin/bun"
 # serial = ""          # boşsa tek bağlı adb cihazı kullanılır
 # camera = "back"
