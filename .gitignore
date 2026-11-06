@@ -5,3 +5,6 @@ bench.toml
 __pycache__/
 node_modules/
 docs/raporlar/
+stress_runs/
+stress.toml
+firmware/boot/build/
