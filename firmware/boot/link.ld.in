@@ -1,0 +1,89 @@
+/*
+ * Link script template for the BL and the apps. build_boot.py fills in @FLASH_ORIGIN@ and
+ * @FLASH_LENGTH@ (BL: 0x08000000/16K; app: slot_base + 0x200 / 16K - 512).
+ *
+ * RAM map (same in every image):
+ *   0x20000000 .noinit   256 B, never zeroed (SPEC 6.3)
+ *   0x20000200 .ramvec   RAM vector table (512 B aligned for VTOR)
+ *              .ramfunc  flash/ISR code that must run while the flash is busy (copied at startup)
+ *              .data, .bss
+ *   0x20020000 top of stack
+ */
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+  FLASH  (rx)  : ORIGIN = @FLASH_ORIGIN@, LENGTH = @FLASH_LENGTH@
+  NOINIT (rwx) : ORIGIN = 0x20000000, LENGTH = 256
+  RAM    (rwx) : ORIGIN = 0x20000100, LENGTH = 128K - 256
+}
+
+_estack = 0x20020000;
+
+SECTIONS
+{
+  .isr_vector :
+  {
+    . = ALIGN(4);
+    KEEP(*(.isr_vector))
+    . = ALIGN(4);
+  } > FLASH
+
+  .text :
+  {
+    *(.text*)
+    *(.rodata*)
+    *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)
+    . = ALIGN(4);
+  } > FLASH
+
+  .ARM.exidx :
+  {
+    *(.ARM.exidx*)
+  } > FLASH
+
+  .noinit (NOLOAD) :
+  {
+    KEEP(*(.noinit*))
+  } > NOINIT
+
+  .ramvec (NOLOAD) :
+  {
+    . = ALIGN(512);
+    KEEP(*(.ramvec*))
+  } > RAM
+
+  _siramfunc = LOADADDR(.ramfunc);
+  .ramfunc :
+  {
+    . = ALIGN(4);
+    _sramfunc = .;
+    KEEP(*(.ramfunc*))
+    . = ALIGN(4);
+    _eramfunc = .;
+  } > RAM AT > FLASH
+
+  _sidata = LOADADDR(.data);
+  .data :
+  {
+    . = ALIGN(4);
+    _sdata = .;
+    *(.data*)
+    . = ALIGN(4);
+    _edata = .;
+  } > RAM AT > FLASH
+
+  .bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _sbss = .;
+    *(.bss*)
+    *(COMMON)
+    . = ALIGN(4);
+    _ebss = .;
+  } > RAM
+
+  /* at least 4 KB left for the stack */
+  ASSERT(_ebss + 0x1000 <= _estack, "RAM overflow")
+  ASSERT(SIZEOF(.noinit) <= 256, "noinit is 256 bytes")
+}
