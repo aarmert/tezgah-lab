@@ -1,0 +1,22 @@
+# Bootloader stress test settings (python -m stress). Copy to stress.toml (gitignored) and edit.
+# Probe and serial port come from bench.toml, as for bench.py. Relative paths are from the repo root.
+
+[stress]
+# Board UID and ST-Link serial are stored only as sha256(salt + value)[:12]. Pick any private string.
+salt = "change-me"
+images_dir = "firmware/boot/build/images"   # v1_A.img ... golden_*.bin, manifest.json
+runs_dir = "stress_runs"                    # results, calibration.json, wear.json (gitignored)
+observe_s = 15          # observe window after the update/fault (SPEC 7)
+resume_limit_s = 30     # BEKLİYOR is accepted only if the resume reaches YENİ within this
+settle_s = 1.0          # a confirmed app must run this long with no reset to end the window early
+line_noise_rate = 0.05  # line_noise: per-line probability of corrupt/drop/delay (--rate overrides)
+max_retries = 8         # per protocol line
+
+# Per-test observe window overrides (seconds).
+[observe_s]
+rollback = 45           # noconfirm: 3 x (5 s trial deadline + ~2 s IWDG) before the rollback
+
+# Golden image per design, flashed under reset for recovery and --baseline strict.
+[golden]
+ab = "golden_ab.bin"
+naive = "golden_naive.bin"

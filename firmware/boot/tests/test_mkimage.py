@@ -326,7 +326,11 @@ class TestElfStatic(unittest.TestCase):
                                   ("bl_naive", "naive", ""), ("bl_naive_hooks", "naive", " hooks")):
             b = (BUILD / f"{bl}.bin").read_bytes()
             self.assertIn(f"BL v0.1 design={design}{hooks} slotA=".encode(), b, bl)
-            for s in (b"BL nofw", b"BL update", b"BL resume", b"BL timeout", b"OK COMMIT",
+            if design == "ab":
+                self.assertIn(b"BL resume", b, bl)
+            else:
+                self.assertNotIn(b"BL resume", b, (bl, "naive must not resume (SPEC 4)"))
+            for s in (b"BL nofw", b"BL update", b"BL timeout", b"OK COMMIT",
                       b"OK ERASED ", b"ERR BAD_HDR", b"ERR LINE", b"ERR STATE"):
                 self.assertIn(s, b, (bl, s))
             if design == "ab":

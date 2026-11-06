@@ -28,6 +28,10 @@ static char s_line[BEGIN_MAX_CHARS + 1u];
 static uint8_t s_chunk[CHUNK_MAX];
 
 static void set_in_progress(uint32_t v) {
+#ifdef DESIGN_NAIVE
+    (void)v;            /* naive keeps no resume state (SPEC 4) */
+    return;
+#endif
     if (g_noinit.update_in_progress != v) {
         g_noinit.update_in_progress = v;
         noinit_commit();

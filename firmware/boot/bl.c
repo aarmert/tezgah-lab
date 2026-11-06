@@ -209,12 +209,7 @@ static void boot_decision(void) {
             refresh();
             continue;
         }
-        if (g_noinit.update_in_progress) {
-            uart_line("BL resume");
-            bl_update_mode(UPD_RESUME);
-            refresh();
-            continue;
-        }
+        /* naive: no resume (SPEC 4) - an interrupted in-place update is not repaired */
         if (s_ok[0]) {
             uart_line("BL jump A");
             jump_to(0);
