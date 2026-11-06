@@ -4,3 +4,4 @@ firmware/build/
 bench.toml
 __pycache__/
 node_modules/
+docs/raporlar/

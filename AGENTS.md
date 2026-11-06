@@ -1,61 +1,63 @@
-# Ajan kuralları (tezgah)
+# Agent rules (tezgah)
 
-Bu klasör bir STM32 test tezgahına bağlı. Karta sadece `bench.py` üzerinden dokun.
-Tezgahın gözü bir Android telefon: kamera aracı `camera/` altında.
+This folder is connected to an STM32 test bench. Touch the board only through `bench.py`.
+The bench's eye is an Android phone. The camera tool is in `camera/`.
 
-## Klasörler
-- `bench.py`, `bench.toml`, `plans/`, `runs/`: test tezgahı aracı, ayarı, planlar, sonuçlar
-- `firmware/`: karttaki test firmware'i (`stm32bench-fw`) ve `build.py`
-- `camera/`: telefon kamerası aracı (Bun + TypeScript, scrcpy/adb/ffmpeg). `cam_blink` adımı bunu kullanır.
-- `.opencode/plugins/android-camera/`: OpenCode için `android_take_photo` aracı (`camera/` kodunu kullanır)
-- `docs/raporlar/`: deneme raporları
+## Folders
+- `bench.py`, `bench.toml`, `plans/`, `runs/`: the test bench tool, its config, test plans, and results
+- `firmware/`: the test firmware on the board (`stm32bench-fw`) and `build.py`
+- `camera/`: the phone camera tool (Bun + TypeScript, scrcpy/adb/ffmpeg). The `cam_blink` step uses it.
+- `.opencode/plugins/android-camera/`: the `android_take_photo` tool for OpenCode (uses the `camera/` code)
+- `docs/raporlar/`: trial reports
 
-## Donanım
-- Kart: STM32F407G-DISC1 (STM32F407VG, Cortex-M4), LED'ler PD12-PD15
-- Seri test kanalı: USART2, PA2=TX, PA3=RX, 115200 8N1 (USB-TTL üzerinden)
-- Saat: HSI 16 MHz
-- Kamera: USB hata ayıklaması açık Android telefon (adb seri `<ADB_SERIAL>`), Android 12+
+## Hardware
+- Board: STM32F407G-DISC1 (STM32F407VG, Cortex-M4), LEDs on PD12-PD15
+- Serial test channel: USART2, PA2=TX, PA3=RX, 115200 8N1 (through a USB-TTL adapter)
+- Clock: HSI 16 MHz
+- Camera: an Android 12+ phone with USB debugging enabled (adb serial `<ADB_SERIAL>`)
 
-## Komutlar (her zaman --json kullan)
-- Derle: `python firmware/build.py --json`
-- Test planı çalıştır: `python bench.py --json run smoke`
-- Yeni özelliği doğrularken: `python bench.py --json run <plan> --verify-can-fail`
-- Tek komut dene: `python bench.py --json send "PING" --expect "^PONG$"`
-- Reset ve açılış kontrolü: `python bench.py --json reset --expect "^BOOT"`
-- Kart cevap vermiyorsa: `python bench.py --json recover`
-- Kart donmuş/çökmüşse nerede olduğunu gör: `python bench.py --json halt-dump`
-  (pc, hata register'ları ve açıklamaları, çökme anındaki `stacked_frame`, yığındaki kod adresleri;
-  çekirdeği sonra devam ettirir). Önce bunu çalıştır, sonra resetle: reset kanıtı siler.
-- Bellek/register oku: `python bench.py --json mem 0x40020C14 --count 1` (sadece okuma, izinli bölgeler)
-- `bench.py gdbserver` sadece insan içindir; çalıştırma.
+## Commands (always use --json)
+- Build: `python firmware/build.py --json`
+- Run a test plan: `python bench.py --json run smoke`
+- When verifying a new feature: `python bench.py --json run <plan> --verify-can-fail`
+- Try a single command: `python bench.py --json send "PING" --expect "^PONG$"`
+- Reset and check the boot message: `python bench.py --json reset --expect "^BOOT"`
+- If the board does not respond: `python bench.py --json recover`
+- If the board is hung or crashed, see where it stopped: `python bench.py --json halt-dump`
+  It prints pc, the fault registers with descriptions, the `stacked_frame` from the moment of the crash,
+  and the code addresses on the stack, then resumes the core. Run this first and reset afterwards,
+  because a reset erases the evidence.
+- Read memory or a register: `python bench.py --json mem 0x40020C14 --count 1` (read only, allowed regions only)
+- `bench.py gdbserver` is for humans only. Do not run it.
 
-Her sonuçta `ok`, `error_type`, `summary`, `likely_causes` alanları var. Başarısız bir
-`run` sonrası `report_dir` içindeki `serial.log` dosyasını oku.
+Every result has `ok`, `error_type`, `summary`, and `likely_causes` fields. After a failed
+`run`, read `serial.log` in the `report_dir`.
 
-## Kamera
-- Fotoğraf çek: `cd camera && ~/.bun/bin/bun scripts/test-camera.ts <ADB_SERIAL> back`
-  (son satır JPEG yolunu verir; dosyayı açıp bak). Telefon karta bakmıyorsa `front` dene.
-- Video çek: `cd camera && ~/.bun/bin/bun scripts/record-video.ts <ADB_SERIAL> back 4 30`
-  (saniye, fps; son satır MP4 yolu). LED ölçümü için bunu elle değil `cam_blink` adımıyla yap.
-- OpenCode'da aynı iş için `android_take_photo` aracı var.
-- Kamera kodunu değiştirdiysen: `cd camera && ~/.bun/bin/bun test && ~/.bun/bin/bun run typecheck`.
-  Testler sahte adb/scrcpy kullanır, telefon gerekmez.
+## Camera
+- Take a photo: `cd camera && ~/.bun/bin/bun scripts/test-camera.ts <ADB_SERIAL> back`
+  The last line is the JPEG path. Open the file and look at it. If the phone is not facing the board, try `front`.
+- Record a video: `cd camera && ~/.bun/bin/bun scripts/record-video.ts <ADB_SERIAL> back 4 30`
+  The arguments are seconds and fps, and the last line is the MP4 path. To measure an LED, use the
+  `cam_blink` step instead of recording by hand.
+- In OpenCode, the `android_take_photo` tool does the same job.
+- If you changed the camera code, run `cd camera && ~/.bun/bin/bun test && ~/.bun/bin/bun run typecheck`.
+  The tests use fake adb and scrcpy, so they need no phone.
 
-## Yasaklar
-- `bench.py`, `bench.toml`, `plans/` ve `runs/` içindeki dosyaları DEĞİŞTİRME. Bir test
-  yanlışsa bunu insana söyle; testi geçmek için testi değiştirmek yasak. Bu `camera/tests/` için de geçerli.
-- `STM32_Programmer_CLI` veya `openocd` komutlarını doğrudan çalıştırma.
-- Option byte, okuma koruması (RDP), mass erase işlemlerine asla dokunma.
-- Firmware'de PA13/PA14 (SWD) pinlerini başka amaçla kullanma.
+## Prohibited
+- Do NOT CHANGE the files in `bench.py`, `bench.toml`, `plans/`, or `runs/`. If a test is wrong, tell
+  the human. Changing a test to make it pass is forbidden. The same applies to `camera/tests/`.
+- Do not run `STM32_Programmer_CLI` or `openocd` directly.
+- Never touch option bytes, read protection (RDP), or mass erase.
+- In the firmware, do not use the PA13/PA14 (SWD) pins for anything else.
 
-## Yeni test önerme
-Yeni bir test gerekiyorsa `plans_proposed/` klasörüne yaz ve insana haber ver.
-İnsan onaylayınca `plans/` klasörüne taşır. Her yeni test `--verify-can-fail` ile
-negatif kontrolden geçmeli: bilerek bozulduğunda FAIL vermeyen test hiçbir şey kanıtlamaz.
+## Proposing a new test
+If a new test is needed, write it to the `plans_proposed/` folder and tell the human.
+The human moves it to `plans/` after approving it. Every new test must pass a negative check
+with `--verify-can-fail`. A test that does not FAIL when the firmware is deliberately broken proves nothing.
 
-## Çalışma döngüsü
-1. Değişikliği firmware/ altında yap.
-2. Derle; hata varsa düzelt.
-3. İlgili planı çalıştır.
-4. FAIL ise önce `likely_causes` ve `serial.log`'a bak, sonra düzelt. Aynı hatada
-   3 denemeden sonra dur ve insana özet ver.
+## Work loop
+1. Make the change under firmware/.
+2. Build it. If there are errors, fix them.
+3. Run the relevant plan.
+4. If it FAILs, look at `likely_causes` and `serial.log` first, then fix. After 3 attempts on the
+   same failure, stop and give the human a summary.

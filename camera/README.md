@@ -6,7 +6,7 @@ The phone camera part of [tezgah](../README.md). `bench.py` runs `scripts/record
 
 `.opencode/plugins/android-camera/` in the tezgah root is an OpenCode plugin. OpenCode loads it automatically when started in the tezgah root. It adds one tool, `android_take_photo`, which records two seconds of an Android device's camera with scrcpy and saves one frame as a JPEG.
 
-The tool returns only the absolute path of that JPEG, for example `/var/folders/.../T/opencode-android-camera-Ab12Cd/photo.jpg`. The photo stays on this computer. Nothing is uploaded. The file is left in the OS temp directory for the caller or the OS to clean up.
+The tool returns only the absolute path of that JPEG, for example `/var/folders/.../T/opencode-android-camera-Ab12Cd/photo.jpg`. The photo stays on this computer. Nothing is uploaded. The tool leaves the file in the OS temp directory for the caller or the OS to clean up.
 
 The JPEG is a video frame, capped at 1920 pixels on the long side. It does not have the resolution, HDR, or processing of the phone's camera app. The tool never captures the device screen.
 
@@ -43,7 +43,7 @@ Ask the agent to take a photo, or call the tool with these inputs:
 
 The tool never picks a device on its own when several are attached. It fails and lists them instead.
 
-The capture runs these steps in order: `checking-tools`, `selecting-device`, `checking-android`, `recording`, `extracting`, `complete`. Each step is reported as tool progress. Device-selection errors explain what to do, for example accepting the USB debugging prompt or passing `serial`; other capture errors also identify the step.
+The capture runs these steps in order: `checking-tools`, `selecting-device`, `checking-android`, `recording`, `extracting`, `complete`. The tool reports each step as progress. Device-selection errors explain what to do, for example accepting the USB debugging prompt or passing `serial`; other capture errors also identify the step.
 
 Timeout and cancellation terminate the local process group on macOS and Linux and wait for the direct child to close. They do not wait for every descendant or the device-side helper to exit. The helper may release the camera shortly afterward. On Windows, only the direct process is terminated.
 
@@ -73,7 +73,7 @@ From the shell, the last stdout line is the MP4 path:
 bun scripts/record-video.ts <serial> back 4 30     # serial "" picks the only attached device
 ```
 
-`capturePhoto` is unchanged: it records 2 seconds without `--camera-fps`, then deletes the recording.
+`capturePhoto` records 2 seconds without `--camera-fps`, then deletes the recording.
 
 ### Using the module directly
 

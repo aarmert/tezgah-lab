@@ -1,135 +1,136 @@
 # tezgah
 
-STM32F4 Discovery kartını bilgisayardan yükleyen, resetleyen, seri porttan
-konuşan, Android telefon kamerasıyla LED'lere bakan ve test planı çalıştıran araç. Hem sen hem Claude (`--json` ile)
-kullanabilir. Linux ve Windows'ta aynen çalışır.
+A tool that flashes and resets an STM32F4 Discovery board from a computer, talks to it over a serial
+port, watches its LEDs with an Android phone camera, and runs test plans. You and Claude (with `--json`)
+can both use it. It runs the same way on Linux and Windows.
 
-## İçindekiler
+## Contents
 
-| Dosya | Ne işe yarar |
+| File | Purpose |
 |---|---|
-| `bench.py` | Ana araç: yükle, resetle, seri porttan gönder/oku, test planı çalıştır, kurtar |
-| `bench.example.toml` | Ayar şablonu (`bench.toml` olarak kopyalanır) |
-| `plans/smoke.toml` | Temel test: yükle, açılış mesajı, PING/VER/TICK/UID/LED |
-| `plans/crash_recovery.toml` | Kartı bilerek çökertir, raporu okur, resetle geri getirir |
-| `plans/measure.toml` | Dahili ölçümler: VDD (VREFINT), çip sıcaklığı, kart saati / PC saati oranı |
-| `plans/camera_blink.toml` | Telefon kamerasıyla yeşil LED'in frekansı (BLINK 1/2/4) ve LED G ON'da sabit yanması |
-| `firmware/` | Kartta çalışan küçük test firmware'i ve `build.py` (make gerekmez) |
-| `camera/` | Telefon kamerası aracı (Bun + TypeScript, scrcpy). Ayrıntı: [`camera/README.md`](camera/README.md) |
-| `.opencode/plugins/android-camera/` | OpenCode için `android_take_photo` aracı |
-| `docs/raporlar/` | Deneme raporları |
-| `setup_ubuntu.sh` | Ubuntu'da her şeyi kuran script |
-| `AGENTS.md` | Ajanların bu klasörde uyacağı kurallar (`CLAUDE.md` bunu içe aktarır) |
+| `bench.py` | The main tool: flash, reset, send and read over serial, run test plans, recover |
+| `bench.example.toml` | Config template (copy it to `bench.toml`) |
+| `plans/smoke.toml` | Basic test: flash, boot message, PING/VER/TICK/UID/LED |
+| `plans/crash_recovery.toml` | Crashes the board on purpose, reads the report, brings it back with a reset |
+| `plans/measure.toml` | Internal measurements: VDD (VREFINT), chip temperature, board clock to PC clock ratio |
+| `plans/camera_blink.toml` | Uses the phone camera to measure the green LED's frequency (BLINK 1/2/4) and check that it stays lit with LED G ON |
+| `firmware/` | The small test firmware that runs on the board, and `build.py` (no make needed) |
+| `camera/` | The phone camera tool (Bun + TypeScript, scrcpy). Details: [`camera/README.md`](camera/README.md) |
+| `.opencode/plugins/android-camera/` | The `android_take_photo` tool for OpenCode |
+| `docs/raporlar/` | Trial reports |
+| `setup_ubuntu.sh` | Script that installs everything on Ubuntu |
+| `AGENTS.md` | Rules agents follow in this folder (`CLAUDE.md` imports it) |
 
-## Bağlantı
+## Wiring
 
 ```
-Discovery mini-USB (ST-Link)  ->  bilgisayar USB   (yükleme ve reset)
+Discovery mini-USB (ST-Link)  ->  computer USB   (flashing and reset)
 
 USB-TTL (3.3V)                    Discovery
   RX   <----------------------    PA2  (USART2 TX)
   TX   ---------------------->    PA3  (USART2 RX)
   GND  -----------------------    GND
-  VCC  bağlama! (kart USB'den beslenir)
+  VCC  do not connect! (the board is powered over USB)
 ```
 
-USB-TTL'in 3.3V modunda olduğundan emin ol (üzerinde jumper varsa 3V3'e al).
-Discovery'deki CN3 jumperları takılı olmalı (ST-Link karta bağlı modu).
+Make sure the USB-TTL adapter is in 3.3V mode. If it has a jumper, set it to 3V3.
+The CN3 jumpers on the Discovery must be fitted (ST-Link connected to the board).
 
-## Ubuntu kurulumu
+## Ubuntu setup
 
 ```bash
-# Windows'tan sunucuya kopyala (kendi kullanıcı adın ve IP'nle)
-scp tezgah.zip kullanici@sunucu-ip:~
-ssh kullanici@sunucu-ip
+# Copy from Windows to the server (use your own user name and IP)
+scp tezgah.zip user@server-ip:~
+ssh user@server-ip
 sudo apt install -y unzip && unzip tezgah.zip && cd tezgah
 bash setup_ubuntu.sh
-# çıkış yapıp tekrar gir, sonra:
-python3 bench.py ports        # USB-TTL'in adını bul, bench.toml'a yaz
+# log out and back in, then:
+python3 bench.py ports        # find the USB-TTL's name and write it to bench.toml
 python3 bench.py doctor
 python3 bench.py run smoke
 python3 bench.py run crash_recovery
 ```
 
-`bench.py ports` çıktısındaki `/dev/serial/by-id/...` ismini kullan. `/dev/ttyUSB0`
-yeniden başlatınca başka cihaza kayabilir, by-id ismi kaymaz.
+Use the `/dev/serial/by-id/...` name from the `bench.py ports` output. After a reboot, `/dev/ttyUSB0`
+can point to a different device. The by-id name stays the same.
 
-## Komutlar
+## Commands
 
-| Komut | Ne yapar |
+| Command | What it does |
 |---|---|
-| `python3 bench.py doctor` | Araçları, ST-Link'i, seri portu kontrol eder |
-| `python3 bench.py ports` | Seri portları listeler |
-| `python3 bench.py flash dosya.elf` | Yükler ve doğrular |
-| `python3 bench.py reset --expect "^BOOT"` | Resetler, açılış mesajını bekler |
-| `python3 bench.py send PING --expect "^PONG$"` | Komut gönderir, cevabı kontrol eder |
-| `python3 bench.py send TICK --expect "^TICK (\d+)$" --min 1 --max 100000` | Sayısal aralık kontrolü |
-| `python3 bench.py read --seconds 3` | Seri porttan okur |
-| `python3 bench.py monitor` | Canlı seri monitör (Ctrl+C ile çık) |
-| `python3 bench.py run smoke` | `plans/smoke.toml` planını çalıştırır |
-| `python3 bench.py run smoke --verify-can-fail` | Ayrıca bilerek bozulmuş haliyle çalıştırır, FAIL vermeli |
-| `python3 bench.py recover` | Sağlam firmware'i reset altında yükleyip kartı kurtarır |
-| `python3 bench.py audit` | Denetim kaydının değiştirilmediğini kontrol eder |
-| `python3 bench.py station` | Üretim istasyonu: operatör adını sorar, her kart için smoke+measure, büyük PASS/FAIL, `q` ile çık |
-| `python3 bench.py halt-dump` | Çekirdeği durdurur; register, hata register'ları (açıklamalı), çökme anındaki pc ve yığını gösterir, devam ettirir |
-| `python3 bench.py mem 0x40020C14 --count 4` | Bellek/çevre birimi register'ı okur (sadece okuma; option byte bölgesi kapalı) |
-| `python3 bench.py gdbserver` | GDB sunucusu açar (insan için, Ctrl+C ile kapanır; `sudo apt install gdb-multiarch`) |
+| `python3 bench.py doctor` | Checks the tools, the ST-Link, and the serial port |
+| `python3 bench.py ports` | Lists serial ports |
+| `python3 bench.py flash file.elf` | Flashes and verifies |
+| `python3 bench.py reset --expect "^BOOT"` | Resets and waits for the boot message |
+| `python3 bench.py send PING --expect "^PONG$"` | Sends a command and checks the reply |
+| `python3 bench.py send TICK --expect "^TICK (\d+)$" --min 1 --max 100000` | Checks a numeric range |
+| `python3 bench.py read --seconds 3` | Reads from the serial port |
+| `python3 bench.py monitor` | Live serial monitor (Ctrl+C to quit) |
+| `python3 bench.py run smoke` | Runs the `plans/smoke.toml` plan |
+| `python3 bench.py run smoke --verify-can-fail` | Also runs a deliberately broken copy of the plan, which must FAIL |
+| `python3 bench.py recover` | Recovers the board by flashing the known-good firmware under reset |
+| `python3 bench.py audit` | Checks that nobody has altered the audit log |
+| `python3 bench.py station` | Production station: asks for the operator name, runs smoke+measure on each board, shows a large PASS/FAIL, `q` to quit |
+| `python3 bench.py halt-dump` | Halts the core, shows the registers, the fault registers with descriptions, and the pc and stack at the crash, then resumes |
+| `python3 bench.py mem 0x40020C14 --count 4` | Reads memory or peripheral registers (read only, the option byte region is blocked) |
+| `python3 bench.py gdbserver` | Starts a GDB server (for humans, Ctrl+C to stop; `sudo apt install gdb-multiarch`) |
 
-`halt-dump`, `mem` ve `gdbserver` şimdilik sadece `backend = "openocd"` ile çalışır.
-Bazı çevre birimi register'larını okumak yan etki yapar (ör. USART `DR` okumak gelen karakteri tüketir).
+For now, `halt-dump`, `mem`, and `gdbserver` work only with `backend = "openocd"`.
+Reading some peripheral registers has side effects. For example, reading the USART `DR` consumes the received character.
 
-Her komutun başına `--json` eklenirse sonuç JSON olur (`ok`, `error_type`,
-`summary`, `likely_causes`). Donanım olmadan denemek için `--sim` ekle.
+Add `--json` to any command to get the result as JSON (`ok`, `error_type`,
+`summary`, `likely_causes`). Add `--sim` to try it without hardware.
 
-Her `run` sonrası `runs/<tarih>_<plan>/` klasöründe `report.md`, `result.json`
-ve zaman damgalı `serial.log` oluşur. Bir test başarısız olursa araç kartı önce
-resetle, olmazsa sağlam firmware'i yeniden yükleyerek kendisi kurtarmaya çalışır.
-Kart çökerse HARDFAULT satırındaki adresi kaynak koddaki fonksiyon ve satıra çevirir.
+Each `run` creates a `runs/<date>_<plan>/` folder with `report.md`, `result.json`,
+and a timestamped `serial.log`. If a test fails, the tool tries to recover the board itself. It resets
+the board first, and if that does not work, it flashes the known-good firmware again.
+If the board crashes, the tool maps the address in the HARDFAULT line to a function and line in the source code.
 
-## Üretim istasyonu (`station`)
+## Production station (`station`)
 
 ```bash
-python3 bench.py station                              # operatörü sorar, her kartta Enter bekler, q ile çıkar
+python3 bench.py station                              # asks for the operator, waits for Enter on each board, q to quit
 python3 bench.py station --plans smoke,measure,camera_blink
-python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # test/otomasyon için
+python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # for testing and automation
 ```
 
-- Her kart için planlar sırayla çalışır. İlk başarısız planda durulur, sonuç büyük PASS/FAIL ile gösterilir.
-- Her kart için denetim kaydına (`runs/audit.jsonl`) bir `station-card` satırı yazılır. Bu satırın
-  hash'i o kartın tüm rapor başlıklarına işlenir. Başlıkta ayrıca operatör, UID, firmware SHA-256,
-  bench.py/OpenOCD sürümü, sunucu adı, başlangıç ve bitiş zamanı bulunur.
-- `runs/station_<tarih>.csv`: kart başına bir satır. Sütunlar: zaman, kart_no, operator, uid,
-  firmware_sha256, sonuc, basarisiz_adim, rapor_klasoru, tekrar, denetim_hash.
-- Aynı UID daha önce test edildiyse ekranda `!!! BU KART DAHA ÖNCE TEST EDİLDİ` yazar, CSV'nin `tekrar`
-  sütunu dolar. Tüm `station_*.csv` dosyalarına bakılır.
-- `--sim` ile yapılan denemeler `station_<tarih>_sim.csv` dosyasına yazılır, gerçek kayda karışmaz.
-- İstasyon açık kaldığı sürece tezgah kilidini tutar. Bu sürede başka bench.py komutları bekler.
+- For each board, the plans run in order. The station stops at the first failing plan and shows the result as a large PASS/FAIL.
+- For each board, the station writes a `station-card` line to the audit log (`runs/audit.jsonl`). The hash
+  of that line goes into the header of every report for that board. The header also has the operator, UID,
+  firmware SHA-256, bench.py and OpenOCD versions, host name, and start and end times.
+- `runs/station_<date>.csv` has one row per board. The columns are zaman (time), kart_no (board number),
+  operator, uid, firmware_sha256, sonuc (result), basarisiz_adim (failed step), rapor_klasoru (report folder),
+  tekrar (repeat), and denetim_hash (audit hash).
+- If the same UID has been tested before, the screen shows `!!! BU KART DAHA ÖNCE TEST EDİLDİ` ("this board
+  was tested before") and the CSV's `tekrar` column is filled in. The check covers all `station_*.csv` files.
+- Runs with `--sim` go to `station_<date>_sim.csv`, so they never mix with the real log.
+- While the station is open, it holds the bench lock. Other bench.py commands wait until it closes.
 
-## Test planı yazmak
+## Writing a test plan
 
 ```toml
-name = "ornek"
+name = "example"
 firmware = "firmware/build/stm32bench-fw.elf"
 
 [[step]]
-action = "flash"            # plandaki firmware'i yükle
+action = "flash"            # flash the plan's firmware
 
 [[step]]
 action = "reset"
 
 [[step]]
-action = "expect"           # bu desene uyan satırı bekle
+action = "expect"           # wait for a line that matches this pattern
 pattern = '^BOOT '
 timeout = 3
 
 [[step]]
-action = "send"             # gönder ve cevabı kontrol et
+action = "send"             # send and check the reply
 text = "TICK"
 expect = '^TICK (\d+)$'
-range = [1, 600000]         # parantez içindeki sayı bu aralıkta olmalı
+range = [1, 600000]         # the number in the capture group must be in this range
 
 [[step]]
-action = "silence"          # bu süre boyunca hiç çıktı gelmemeli
+action = "silence"          # no output may arrive during this time
 seconds = 1
 
 [[step]]
@@ -137,91 +138,91 @@ action = "delay"
 seconds = 0.5
 
 [[step]]
-action = "clock_check"      # TICK, PC'de 5 sn bekle, tekrar TICK
+action = "clock_check"      # TICK, wait 5 s on the PC, TICK again
 seconds = 5
-range = [0.97, 1.03]        # kart süresi / PC süresi (time.monotonic) bu aralıkta olmalı
+range = [0.97, 1.03]        # board time / PC time (time.monotonic) must be in this range
 ```
 
-`clock_check` sonucunda oran, iki süre ve PC ölçümünün belirsizliği (TICK gidiş-dönüşünün
-yarısı) yazılır. `--verify-can-fail` son beklenti adımı `clock_check` ise onun aralığını bozar.
+`clock_check` writes the ratio, both durations, and the uncertainty of the PC measurement (half the TICK
+round trip). If the last expectation step is a `clock_check`, `--verify-can-fail` breaks its range.
 
-### Kamera ile LED ölçümü (`cam_blink`)
+### Measuring an LED with the camera (`cam_blink`)
 
 ```toml
 [[step]]
-action = "cam_blink"        # telefonla video çek, LED'in yanıp sönme frekansını ölç
-seconds = 4                 # kayıt süresi
+action = "cam_blink"        # record a video with the phone and measure the LED's blink frequency
+seconds = 4                 # recording length
 range = [1.8, 2.2]          # Hz
-# duty_range = [0.4, 0.6]   # isteğe bağlı doluluk aralığı
-# skip_s = 0.5              # baştaki kareleri atla (pozlama/odak otursun)
+# duty_range = [0.4, 0.6]   # optional duty cycle range
+# skip_s = 0.5              # skip the first frames (let exposure and focus settle)
 
 [[step]]
-action = "cam_blink"        # LED sabit mi? Bölge ve eşik önceki cam_blink adımından alınır
+action = "cam_blink"        # is the LED steady? The region and threshold come from the previous cam_blink step
 seconds = 3
-steady = "on"               # veya "off"
+steady = "on"               # or "off"
 ```
 
-- Video `camera/` aracı (`camera/scripts/record-video.ts`, scrcpy) ile çekilir. Kare zamanları videonun
-  kendi zaman damgalarından alınır (ffprobe).
-- LED bölgesi: kareler boyunca parlaklığı en çok değişen 30×30 piksellik yer. LED'in parlak bir yüzeydeki
-  yansıması daha çok değişiyorsa onu seçer. Frekans aynı çıkar ama işaretli kareye bak. Sabitlemek için
-  `bench.toml`'a `[camera] roi = [x, y, genişlik, yükseklik]` ekle.
-- Karar sayılara göre verilir: eşik = parlaklığın %5 ve %95 değerlerinin ortası, geçişler histerezisli,
-  geçiş anı iki kare arasında doğrusal ara değerle bulunur. Frekans yükselen ve düşen kenarlardan hesaplanır.
-- Ölçülen frekans kare hızının dörtte birinden büyükse mesaj `UYARI:` ile başlar. Kare hızının yarısını
-  aşan frekanslar katlanır, yani daha düşük görünür.
-- Her adım rapor klasörüne `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (bölge işaretli, diğer adaylar sarı
-  daire) ve `cam_stepNN.csv` (zaman, parlaklık) yazar.
-- OpenCV ve NumPy gerekir: `sudo apt install python3-opencv python3-numpy`. Kamera aracı için
-  adb, scrcpy 2.5+, ffmpeg ve [Bun](https://bun.sh) gerekir; bir kez kökte `bun install` çalıştır. `--sim` ile sentetik video kullanılır.
+- The `camera/` tool (`camera/scripts/record-video.ts`, scrcpy) records the video. Frame times come from
+  the video's own timestamps (ffprobe).
+- The LED region is the 30×30 pixel spot whose brightness changes most across the frames. If the LED's
+  reflection on a shiny surface changes more, the tool picks the reflection. The frequency comes out the same,
+  but check the marked frame. To fix the region, add `[camera] roi = [x, y, width, height]` to `bench.toml`.
+- The verdict is numeric. The threshold is the midpoint between the 5th and 95th brightness percentiles, transitions
+  use hysteresis, and the tool finds each transition time by linear interpolation between two frames.
+  It computes the frequency from both rising and falling edges.
+- If the measured frequency is above a quarter of the frame rate, the message starts with `UYARI:` ("warning").
+  Frequencies above half the frame rate alias, so they look lower than they are.
+- Each step writes `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (region marked, other candidates as yellow
+  circles), and `cam_stepNN.csv` (time, brightness) to the report folder.
+- It needs OpenCV and NumPy: `sudo apt install python3-opencv python3-numpy`. The camera tool needs
+  adb, scrcpy 2.5+, ffmpeg, and [Bun](https://bun.sh). Run `bun install` once in the root. With `--sim`, the tool uses a synthetic video.
 
-Desenler regex'tir. TOML'da tek tırnak kullan, ters eğik çizgi kaçırmaya gerek kalmaz.
+Patterns are regular expressions. Use single quotes in TOML so you don't need to escape backslashes.
 
-## Test firmware komutları
+## Test firmware commands
 
-`PING`, `VER`, `TICK`, `UID`, `VDD` (besleme, mV), `TEMP` (çip sıcaklığı, °C, 0,1 hassasiyet),
+`PING`, `VER`, `TICK`, `UID`, `VDD` (supply voltage in mV), `TEMP` (chip temperature in °C, 0.1 resolution),
 `LED <G|O|R|B> <ON|OFF>`, `BLINK <1-20>`
-(yeşil LED'in yanıp sönme hızı, kamera testi için), `CRASH` (bilerek HardFault),
-`RESET`. Açılışta `BOOT stm32bench-fw v1.2.0 reset=<sebep>` basar. Yeşil LED
-ana döngü dönerken 2 Hz yanıp söner; kart donarsa durur.
+(the green LED's blink rate, for the camera test), `CRASH` (a deliberate HardFault),
+`RESET`. At boot it prints `BOOT stm32bench-fw v1.2.0 reset=<cause>`. The green LED
+blinks at 2 Hz while the main loop runs, and stops if the board hangs.
 
-Firmware STM32F407G-DISC1 ve STM32F411E-DISCO içindir (LED'ler PD12-PD15). `TEMP` sadece
-F407'de doğrudur: F411'de sıcaklık sensörü ADC kanal 16 değil 18'dedir.
-Saat olarak dahili 16 MHz HSI kullanır, PLL ayarı yoktur.
+The firmware targets the STM32F407G-DISC1 and STM32F411E-DISCO (LEDs on PD12-PD15). `TEMP` is correct
+only on the F407, because the F411's temperature sensor is on ADC channel 18, not 16.
+The clock is the internal 16 MHz HSI, with no PLL setup.
 
-## Ajanla kullanım (Claude, OpenCode)
+## Using it with an agent (Claude, OpenCode)
 
-Bu klasörde `claude` veya `opencode` başlat. Kurallar `AGENTS.md` içinde; Claude bunu `CLAUDE.md`
-üzerinden okur. Ajan karta sadece `bench.py` ile dokunur, test dosyalarını değiştiremez, option byte'lara dokunmaz.
+Start `claude` or `opencode` in this folder. The rules are in `AGENTS.md`, and Claude reads it through
+`CLAUDE.md`. The agent touches the board only through `bench.py`, cannot change the test files, and does not touch option bytes.
 
-Testleri Claude'un değiştirmesini kesin engellemek için:
+To make sure Claude cannot change the tests:
 
 ```bash
 chmod -R a-w plans bench.toml bench.py
 ```
 
-ve `bench.toml` içinde `plans_dir_only = true` yap.
+and set `plans_dir_only = true` in `bench.toml`.
 
-## Windows'ta
+## On Windows
 
-1. python.org'dan Python 3.11+ kur ("Add to PATH" işaretli).
+1. Install Python 3.11+ from python.org (with "Add to PATH" checked).
 2. `py -m pip install pyserial`
-3. STM32CubeProgrammer kur (ST-Link sürücüsü de gelir). Derleyici için STM32CubeCLT veya Arm GNU Toolchain.
-4. `bench.toml` içinde `backend = "cubeprog"`, `port = "COM5"` (Aygıt Yöneticisi'nden veya `py bench.py ports`).
+3. Install STM32CubeProgrammer (it includes the ST-Link driver). For the compiler, install STM32CubeCLT or the Arm GNU Toolchain.
+4. In `bench.toml`, set `backend = "cubeprog"` and `port = "COM5"` (find the port in Device Manager or with `py bench.py ports`).
 5. `py firmware\build.py`, `py bench.py doctor`, `py bench.py run smoke`
 
-## Sık hatalar
+## Common errors
 
-| Hata | Çözüm |
+| Error | Fix |
 |---|---|
-| `probe_not_found` | USB kablosu, `plugdev` grubu (çıkış yapıp tekrar gir), başka program ST-Link'i tutuyor |
+| `probe_not_found` | Check the USB cable and the `plugdev` group (log out and back in), or another program is holding the ST-Link |
 | `target_not_responding` | `python3 bench.py recover` |
-| `serial_open_failed` | Port adı yanlış veya `dialout` grubunda değilsin |
-| `expect_timeout`, hiç satır yok | TX/RX ters, GND bağlı değil, USB-TTL 5V modunda |
-| Bozuk karakterler | Baud hızı uyuşmuyor (115200 olmalı) |
+| `serial_open_failed` | Wrong port name, or you are not in the `dialout` group |
+| `expect_timeout` with no lines at all | TX/RX swapped, GND not connected, or the USB-TTL is in 5V mode |
+| Garbled characters | Baud rate mismatch (it must be 115200) |
 
-## Durum
+## Status
 
-Firmware QEMU emülatöründe, araç sahte kartla ve gerçek seri port yolu üzerinden
-denendi. Gerçek Discovery kartında ilk kez seninle çalışacak; ilk `run smoke`
-sonucunu kontrol et.
+The firmware has run in the QEMU emulator, and the tool has run against a simulated board and over a real
+serial port. Its first run on a real Discovery board will be with you, so check the result of the first `run smoke`.
