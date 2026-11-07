@@ -1,7 +1,9 @@
 # stress: bootloader stress test (host side)
 
-Host half of the bootloader stress test for the STM32F407G-DISC1 bench. The contract with the
-firmware (`firmware/boot/`) is [`docs/stress/SPEC.md`](../docs/stress/SPEC.md); this tool follows it.
+Host half of the bootloader stress test for the STM32F407G-DISC1 bench and (`--target c031`) the
+NUCLEO-C031C6 + ESP32-S3 bench. The contract with the firmware (`firmware/boot/`, `firmware/boot_c0/`,
+`esp32/bridge/`) is [`docs/stress/SPEC.md`](../docs/stress/SPEC.md) with the addenda
+[`SPEC-C031C6.md`](../docs/stress/SPEC-C031C6.md) and [`SPEC-ESP32.md`](../docs/stress/SPEC-ESP32.md).
 Python 3.12+, stdlib + pyserial. matplotlib is optional (`report --plot`).
 
 The tool uses `bench.py` without changing it: `Config`, `make_programmer` (OpenOCD backend only:
@@ -146,6 +148,43 @@ What the sim shows (seed 1): `reset_sweep` on A/B gives 255/255 accepted (163 BE
 and on naive 103/174 YANLIŞ (every DATA and HDR point, and some partial erases). This is how the
 naive control is meant to work. If the A/B sim ever shows a failure, either the sim or the spec
 has a bug: report it.
+
+## NUCLEO-C031C6 target and the ESP32-S3 bridge
+
+`--target c031` (default `f407`) runs the same tests on the NUCLEO-C031C6 (`docs/stress/SPEC-C031C6.md`)
+with its own layout (`stress/layout_c031.py`: 2 KB pages, 256 B header, header_crc at 252, payload at
+slot + 0x100, 8-byte alignment, one 400-char line limit, RAM top 0x20003000, board id 0xC031C600,
+BEGIN reply 1 s), images (`[c031] images_dir`, default `firmware/boot_c0/build/images`; manifest
+entries must say `"target": "c031"`), bench config (`bench-c031.toml`, from `bench-c031.example.toml`;
+never bench.toml) and calibration (`calibration_c031.json`). The BL status line must say
+`target=c031`, or the run stops (`wrong_firmware`). `run.json` records `target`, `link`, `reset_source`.
+
+The C031 bench talks through the ESP32-S3 bridge (`esp32/bridge`, `docs/stress/SPEC-ESP32.md`):
+
+```
+python3 esp32/build.py --json                                          # compile only
+python -m stress --json doctor --target c031                            # images, bench-c031.toml, probe, VCP, ESP PING
+python -m stress --json calibrate --target c031                         # over the bridge: hook traces + ESP windows
+python -m stress --json run basic --target c031 --n 20
+python -m stress --json run reset_sweep --target c031 --reset-source esp
+python -m stress --json run reset_random --target c031 --link vcp       # no ESP32: everything over the VCP
+```
+
+- `--link esp` (default on c031): `stress/esp_bridge.py` wraps each line in `TX`, injected bytes in
+  `TXH`, unwraps `RX`; `ESP ...` lines go to serial.log as `E`. The ST-LINK VCP is opened as the
+  **witness** (logged as `V`): after each trial the host compares the status/banner lines it saw on
+  both UARTs and notes `witness_mismatch: ...` when they differ. `--link vcp`: the VCP only.
+- `--reset-source esp` (reset_random, reset_sweep, naive_control; needs `--link esp`): instead of
+  `FAULT ARM`, the host sends `NRST ARM TX <delay> 1` right before the trigger line (ERASE → `UPD BEGIN`,
+  DATA k → that DATA line, HDR → `UPD END`); the ESP pulses NRST `<delay>` µs after the line's last
+  byte. CSV: `fault_type=nrst_esp`, `fault_fired` = pulses fired, note `reset_source=esp; late_us=<n>`.
+  The fired pulses are explained resets for the boot count. The sweep windows per line come from
+  `calibrate` over the bridge (`TIME ON` timestamps); double_fault always uses the hook.
+- `[esp] port` / `baud` (921600) in stress.toml.
+
+C031 sim (seed 1, every point): `reset_sweep` ab 288/288 accepted (167 BEKLİYOR + 121 YENİ),
+naive 98/174 YANLIŞ; with `--reset-source esp` ab 150/150, naive 58/150 YANLIŞ. `naive_control
+--n 60`: 47 YANLIŞ. `reset_random --n 100` and `double_fault --n 100`: all accepted.
 
 ## Tests
 

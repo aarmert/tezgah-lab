@@ -24,6 +24,10 @@ DEFAULTS = {
     # per-test observe window overrides (seconds); rollback needs 3 x (5 s deadline + 2 s IWDG)
     "observe_s": {"rollback": 45.0},
     "golden": {"ab": "golden_ab.bin", "naive": "golden_naive.bin"},
+    # SPEC-C031C6 10: the C031's own image folder and bench config (bench.toml stays the F407's)
+    "c031": {"images_dir": "firmware/boot_c0/build/images", "bench_config": "bench-c031.toml"},
+    # SPEC-ESP32: the ESP32-S3 bridge on its CH343 UART0 port
+    "esp": {"port": "", "baud": 921600, "nrst_pulse_us": 1000},
 }
 
 
@@ -51,6 +55,24 @@ class StressConfig:
     @property
     def images_dir(self) -> Path:
         return self.resolve(self.get("stress", "images_dir"))
+
+    def images_dir_for(self, target: str) -> Path:
+        """f407: [stress] images_dir; c031: [c031] images_dir (default firmware/boot_c0/build/images)."""
+        if target == "f407":
+            return self.images_dir
+        return self.resolve(self.get(target, "images_dir"))
+
+    def bench_config_for(self, target: str, arg: str | None) -> str | None:
+        """The bench.toml path for this target. --config wins. The C031 never falls back to
+        bench.toml (the F407 bench): [c031] bench_config, default bench-c031.toml at the repo root."""
+        if arg or target == "f407":
+            return arg
+        p = self.resolve(self.get(target, "bench_config"))
+        if not p.is_file():
+            raise BenchError("config_not_found", f"{p} not found (the {target} bench config).",
+                             ["Copy bench-c031.example.toml to bench-c031.toml and set the ST-LINK VCP port",
+                              "Or pass --config <file>"])
+        return str(p)
 
     def golden_name(self, design: str) -> str:
         return self.get("golden", design, f"golden_{design}.bin")

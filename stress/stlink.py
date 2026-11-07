@@ -8,15 +8,22 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._bench import BenchError, bench
 from .images import ImageSet, Image, label_candidates, slot_label, slot_valid
-from .layout import FLASH_BASE, SECTORS, SLOT_SIZE, UID_ADDR
+from .layout import F407, SLOT_SIZE, Layout
 from .meta import MetaRecord, latest
 
-REGIONS = {"A": SECTORS[2], "B": SECTORS[3], "META0": SECTORS[1], "META1": SECTORS[4]}
+
+def regions(layout: Layout = F407) -> dict[str, tuple[int, int]]:
+    """The four regions one ST-Link read dumps: both slots and both meta areas."""
+    return {"A": (layout.slot_base["A"], layout.slot_size), "B": (layout.slot_base["B"], layout.slot_size),
+            "META0": layout.meta_region(0), "META1": layout.meta_region(1)}
+
+
+REGIONS = regions(F407)
 
 
 @dataclass
@@ -25,6 +32,7 @@ class FlashState:
     B: bytes
     META0: bytes
     META1: bytes
+    layout: Layout = field(default=F407, repr=False)
 
     def slot(self, s: str) -> bytes:
         return self.A if s == "A" else self.B
@@ -33,10 +41,10 @@ class FlashState:
         return hashlib.sha256(self.slot(s)).hexdigest()
 
     def meta(self) -> MetaRecord | None:
-        return latest(self.META0, self.META1)
+        return latest(self.META0, self.META1, self.layout)
 
     def valid(self, s: str) -> bool:
-        return slot_valid(self.slot(s), s)[0]
+        return slot_valid(self.slot(s), s, self.layout)[0]
 
     def labels(self, images: ImageSet, first: list[Image] | None = None) -> dict[str, str]:
         return {s: slot_label(self.slot(s), label_candidates(images, s, first)) for s in ("A", "B")}
@@ -88,15 +96,16 @@ def ihex_to_segments(text: str) -> list[tuple[int, bytes]]:
 class Probe:
     """Wraps a bench Programmer (OpenOCD on hardware, stress.sim.SimProgrammer in --sim)."""
 
-    def __init__(self, prog, cache_dir: Path):
+    def __init__(self, prog, cache_dir: Path, layout: Layout = F407):
         self.prog = prog
         self.cache_dir = Path(cache_dir)
+        self.layout = layout
         self.reads = 0
 
     def read_state(self) -> FlashState:
         with tempfile.TemporaryDirectory(prefix="stress_dump_") as td:
             cmds, paths = [], {}
-            for name, (addr, size) in REGIONS.items():
+            for name, (addr, size) in regions(self.layout).items():
                 p = Path(td) / f"{name}.bin"
                 paths[name] = (p, size)
                 cmds.append(f"dump_image {{{p.as_posix()}}} 0x{addr:08X} {size}")
@@ -111,18 +120,21 @@ class Probe:
                                      bench.tail(out))
                 data[name] = p.read_bytes()
         self.reads += 1
-        return FlashState(**data)
+        return FlashState(**data, layout=self.layout)
 
     def golden_hex(self, golden_bin: Path, skip_bl: bool = False) -> Path:
         """Intel HEX of a golden .bin. skip_bl: leave out S0 (the BL), so only S1..S4 are erased and
         written (the per-trial metafull baseline must not wear the BL sector)."""
         data = Path(golden_bin).read_bytes()
-        if len(data) > 0x100000:
-            raise BenchError("image_invalid", f"{golden_bin.name} is larger than the flash.")
-        base = FLASH_BASE
+        L = self.layout
+        limit = 0x100000 if L.target == "f407" else L.flash_size
+        if len(data) > limit:
+            raise BenchError("image_invalid", f"{golden_bin.name} is larger than the {L.target} flash "
+                             f"({len(data)} > {limit} bytes).", ["Wrong images folder for --target?"])
+        base = L.flash_base
         if skip_bl:
-            bl_size = SECTORS[1][0] - FLASH_BASE
-            data, base = data[bl_size:], FLASH_BASE + bl_size
+            bl_size = L.bl_size
+            data, base = data[bl_size:], L.flash_base + bl_size
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(data).hexdigest()[:16]
         out = self.cache_dir / f"{Path(golden_bin).stem}{'_nobl' if skip_bl else ''}_{digest}.hex"
@@ -137,7 +149,7 @@ class Probe:
         return self.prog.reset()
 
     def read_uid(self) -> str:
-        words = bench.parse_mdw(self.prog.debug_commands([f"mdw 0x{UID_ADDR:08X} 3"]))
+        words = bench.parse_mdw(self.prog.debug_commands([f"mdw 0x{self.layout.uid_addr:08X} 3"]))
         if len(words) != 3:
             raise BenchError("tool_error", "UID read returned the wrong number of words.")
         return "".join(f"{v:08X}" for _, v in words)

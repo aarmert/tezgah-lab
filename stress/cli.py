@@ -15,12 +15,16 @@ from . import VERSION, faults
 from ._bench import ROOT, BenchError, bench
 from .config import StressConfig, load_stress_config
 from .csvlog import CsvLog, Wear
+from .esp_bridge import BRIDGE_ID, EspBridgeTransport, Witness
 from .images import ImageSet, header_error
+from .layout import F407, Layout, TARGETS
+from .layout import get as get_layout
 from .link import Link, RealClock
 from .report import write_summary
 from .runner import Ctx, run_trial
 from .stlink import Probe
-from .tests_defs import BAD_IMAGES, ROLLBACK_VARIANTS, TESTS, Opts, TrialPlan, make_plans, trial_scenario
+from .tests_defs import (BAD_IMAGES, ESP_RESET_TESTS, ROLLBACK_VARIANTS, TESTS, Opts, TrialPlan, make_plans,
+                         trial_scenario)
 
 REQUIRED_BASES = ("v1", "v2", *ROLLBACK_VARIANTS, *(k for k, _ in BAD_IMAGES))
 
@@ -37,51 +41,114 @@ class Bench:
     stack: contextlib.ExitStack
 
 
-def sim_images(scfg: StressConfig) -> ImageSet:
+def target_layout(args) -> Layout:
+    return get_layout(getattr(args, "target", None))
+
+
+def link_kind(args, L: Layout) -> str:
+    """SPEC-ESP32 3: --link esp|vcp, default esp on the C031 bench, vcp on the F407."""
+    return getattr(args, "link", None) or ("esp" if L.target == "c031" else "vcp")
+
+
+def reset_source(args) -> str:
+    return getattr(args, "reset_source", None) or "hook"
+
+
+def sim_images(scfg: StressConfig, L: Layout = F407) -> ImageSet:
     from .simimages import write_image_set
-    return ImageSet.load(write_image_set(scfg.runs_dir / "sim_images"))
+    name = "sim_images" if L.target == "f407" else f"sim_images_{L.target}"
+    return ImageSet.load(write_image_set(scfg.runs_dir / name, L), L)
 
 
-def load_images(scfg: StressConfig, sim: bool, design: str) -> ImageSet:
-    images = sim_images(scfg) if sim else ImageSet.load(scfg.images_dir)
+def load_images(scfg: StressConfig, sim: bool, design: str, L: Layout = F407) -> ImageSet:
+    images = sim_images(scfg, L) if sim else ImageSet.load(scfg.images_dir_for(L.target), L)
+    if (why := images.target_problem()):
+        raise BenchError("images_wrong_target", why + ".",
+                         [f"Set [{'stress' if L.target == 'f407' else L.target}] images_dir in stress.toml",
+                          "Or pass the matching --target"])
     missing = [f"{b}_{s}.img" for b in ("v1", "v2") for s in "AB" if not images.has(b, s)]
     if design not in images.golden:
         missing.append(scfg.golden_name(design))
     if missing:
+        build = "firmware/boot (mkimage.py)" if L.target == "f407" else "firmware/boot_c0 (build_boot.py)"
         raise BenchError("images_missing", f"Missing in {images.dir}: {', '.join(missing)}",
-                         ["Build the boot images (firmware/boot, mkimage.py)",
-                          "Set [stress] images_dir in stress.toml"])
+                         [f"Build the boot images: {build}",
+                          f"Set [{'stress' if L.target == 'f407' else L.target}] images_dir in stress.toml"])
     return images
+
+
+def esp_port_cfg(scfg: StressConfig) -> tuple[str, int]:
+    port = str(scfg.get("esp", "port") or "")
+    if not port:
+        raise BenchError("config_invalid", "[esp] port is empty in stress.toml (the ESP32 bridge).",
+                         ["Set [esp] port = /dev/serial/by-id/usb-1a86_USB_Single_Serial_*",
+                          "Or run over the ST-LINK VCP: --link vcp"])
+    return port, int(scfg.get("esp", "baud"))
+
+
+def _safe_disarm(bridge) -> None:
+    """Leave no NRST pulse armed when the run ends; never mask the run's own error."""
+    try:
+        bridge.disarm(timeout=0.3)
+    except Exception:
+        pass
 
 
 def open_bench(args, scfg: StressConfig, design: str, test: str, log_path: Path | None, seed: int) -> Bench:
     stack = contextlib.ExitStack()
+    L = target_layout(args)
+    link_k = link_kind(args, L)
+    src = reset_source(args)
+    if src == "esp" and link_k != "esp":
+        raise BenchError("bad_argument", "--reset-source esp needs --link esp (the NRST pulse is armed on "
+                         "the bridge's TX of a protocol line).")
     try:
-        images = load_images(scfg, args.sim, design)
+        images = load_images(scfg, args.sim, design, L)
+        bridge = witness = None
         if args.sim:
             from .sim import SimBoard, SimClock, SimProgrammer, SimSerial, timings_from
-            board = SimBoard(seed=seed, golden=images.golden[design].read_bytes(),
-                             timings=timings_from(scfg.data.get("sim", {})))
-            transport, clock, prog = SimSerial(board), SimClock(board), SimProgrammer(board)
+            board = SimBoard(seed=seed, golden=images.golden[design].read_bytes(), layout=L,
+                             timings=timings_from(scfg.data.get("sim", {}), L.target))
+            clock, prog = SimClock(board), SimProgrammer(board)
+            if link_k == "esp":
+                from .sim_esp import SimEspPort
+                tap = board.add_tap()                    # the other UART: the VCP witness
+                bridge = EspBridgeTransport(SimEspPort(board), clock=clock)
+                transport, witness = bridge, Witness(SimSerial(board, tap))
+            else:
+                transport = SimSerial(board)
             bench_name, probe_serial = "sim", "sim"
-            wear_path = scfg.runs_dir / "wear_sim.json"
+            wear_path = scfg.runs_dir / ("wear_sim.json" if L.target == "f407" else f"wear_sim_{L.target}.json")
         else:
             board = None
-            cfg = bench.load_config(args.config, False)
+            cfg = bench.load_config(scfg.bench_config_for(L.target, args.config), False)
             stack.enter_context(bench.BenchLock(cfg))
             prog = bench.make_programmer(cfg, None)
             if prog.name != "openocd":
                 raise BenchError("not_supported", f"stress needs the OpenOCD backend (dump_image), not {prog.name}.",
                                  ['Set [probe] backend = "openocd" in bench.toml'])
-            transport = bench.SerialTransport(cfg.get("serial", "port"), int(cfg.get("serial", "baud")))
-            stack.callback(transport.close)
+            vcp = bench.SerialTransport(cfg.get("serial", "port"), int(cfg.get("serial", "baud")))
+            stack.callback(vcp.close)
+            if link_k == "esp":
+                port, baud = esp_port_cfg(scfg)
+                raw = bench.SerialTransport(port, baud)
+                stack.callback(raw.close)
+                bridge = EspBridgeTransport(raw)
+                stack.callback(_safe_disarm, bridge)
+                transport, witness = bridge, Witness(vcp)
+            else:
+                transport = vcp
             clock = RealClock()
             bench_name = cfg.get("bench", "name")
             probe_serial = bench.probe_serial(cfg)
             wear_path = scfg.runs_dir / "wear.json"
         log = stack.enter_context(open(log_path, "a", encoding="utf-8")) if log_path else None
         link = Link(transport, clock, log)
-        probe = Probe(prog, scfg.runs_dir / ".cache")
+        if witness is not None:
+            witness.attach(link)
+        if bridge is not None:
+            link.note(f"link=esp bridge {BRIDGE_ID} {bridge.version}; witness=VCP (direction V)")
+        probe = Probe(prog, scfg.runs_dir / ".cache", L)
         uid = "sim" if args.sim else None
         if not args.sim:
             try:
@@ -96,7 +163,8 @@ def open_bench(args, scfg: StressConfig, design: str, test: str, log_path: Path 
                   settle_s=float(scfg.get("stress", "settle_s")),
                   max_retries=int(scfg.get("stress", "max_retries")),
                   uid=uid if uid != "sim" else None,
-                  versions={i.base: i.version for i in images.images.values()})
+                  versions={i.base: i.version for i in images.images.values()},
+                  bridge=bridge, witness=witness, reset_source=src)
         return Bench(ctx, board, bench_name, prog.name, prog.tool_version(), probe_serial, stack)
     except BaseException:
         stack.close()
@@ -123,17 +191,33 @@ def new_run_dir(scfg: StressConfig, name: str) -> Path:
 
 
 def ensure_calibration(args, scfg: StressConfig, design: str) -> dict:
+    """The calibration for this target/design. With --reset-source esp it must hold the bridge's
+    windows (made over --link esp). --sim calibrates on the spot when it is missing."""
+    L = target_layout(args)
+    need_esp = reset_source(args) == "esp"
     try:
-        return faults.load_calibration(scfg.runs_dir, args.sim, design)
+        cal = faults.load_calibration(scfg.runs_dir, args.sim, design, L.target)
+        if need_esp and not cal.get("esp"):
+            if not args.sim:
+                faults.esp_targets(cal)                  # raises calibration_stale with the hint
+            raise BenchError("calibration_stale", "no esp windows")
+        return cal
     except BenchError:
         if not args.sim:
             raise
     calibrate(args, scfg, design, runs=4, quiet=True)
-    return faults.load_calibration(scfg.runs_dir, True, design)
+    return faults.load_calibration(scfg.runs_dir, True, design, L.target)
 
 
 def reproduce_cmd(args, test: str, n: int, design: str) -> str:
     c = f"python -m stress --json run {test} --n {n} --seed {args.seed} --design {design}"
+    L = target_layout(args)
+    if L.target != "f407":
+        c += f" --target {L.target}"
+    if getattr(args, "link", None):
+        c += f" --link {args.link}"
+    if reset_source(args) != "hook":
+        c += f" --reset-source {reset_source(args)}"
     if args.sim:
         c += " --sim"
     for k in ("baseline", "step_us", "max_points_per_phase", "rate"):
@@ -157,9 +241,12 @@ def opts_from(args, scfg: StressConfig, design: str = "ab") -> Opts:
     mf = bool(getattr(args, "meta_near_full", False))
     if mf and design != "ab":
         raise BenchError("bad_argument", "--meta-near-full needs design=ab (the naive BL has no meta log).")
+    src = reset_source(args)
+    if src == "esp" and link_kind(args, target_layout(args)) != "esp":
+        raise BenchError("bad_argument", "--reset-source esp needs --link esp (the ESP32 bridge).")
     return Opts(step_us=args.step_us or 10, max_points_per_phase=args.max_points_per_phase or 50,
                 rate=args.rate if args.rate is not None else float(scfg.get("stress", "line_noise_rate")),
-                meta_near_full=mf, design=design)
+                meta_near_full=mf, design=design, reset_source=src)
 
 
 def second_fault_table(cal: dict, test: str, opts: Opts) -> dict:
@@ -181,10 +268,12 @@ def cmd_plan(args, scfg: StressConfig) -> dict:
     if not args.json:
         for d in listed[:args.limit or None]:
             print(json.dumps(d, ensure_ascii=False))
-    out = {"test": test, "design": design, "n": len(plans), "seed": args.seed}
+    out = {"test": test, "design": design, "n": len(plans), "seed": args.seed,
+           "target": target_layout(args).target, "reset_source": opts.reset_source}
     if cal:
         out["scenarios"] = {sc: sum(p.scenario == sc for p in plans) for sc in sorted({p.scenario for p in plans})}
-        out["sweep_points"] = {sc: len(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc))
+        src = opts.reset_source if test in ESP_RESET_TESTS else "hook"
+        out["sweep_points"] = {sc: len(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc, src))
                                for sc in out["scenarios"]}
         if test == "double_fault":
             out["second_faults"] = second_fault_table(cal, test, opts)
@@ -203,11 +292,12 @@ def cmd_run(args, scfg: StressConfig) -> dict:
     opts = opts_from(args, scfg, design)
     cal = ensure_calibration(args, scfg, design) if td.needs_cal else None
     plans = make_plans(test, args.n, args.seed, cal, opts)
-    if opts.meta_near_full and "ab_metafull" not in load_images(scfg, args.sim, design).golden:
+    L = target_layout(args)
+    if opts.meta_near_full and "ab_metafull" not in load_images(scfg, args.sim, design, L).golden:
         raise BenchError("images_missing", "golden_ab_metafull.bin is missing.",
                          ["Rebuild: python3 firmware/boot/build_boot.py --json"])
     if args.dry_run:
-        load_images(scfg, args.sim, design)
+        load_images(scfg, args.sim, design, L)
         return bench.ok_result("run", f"[dry-run] {test}: {len(plans)} trials on design={design}; nothing touched.",
                                plans=[p.describe() for p in plans], observe_s=args.observe_s or scfg.observe_s(test))
     run_dir = new_run_dir(scfg, test)
@@ -215,11 +305,13 @@ def cmd_run(args, scfg: StressConfig) -> dict:
     rows, error, interrupted = [], None, False
     run_info = {
         "test": test, "number": td.number, "design": design, "seed": args.seed, "n": len(plans),
+        "target": L.target, "link": link_kind(args, L), "reset_source": opts.reset_source,
         "sim": bool(args.sim), "args": {k: v for k, v in vars(args).items() if k not in ("func",)},
         "started": dt.datetime.now().isoformat(timespec="seconds"), "git": git_info(),
         "versions": {"python": platform.python_version(), "stress": VERSION, "bench": bench.VERSION,
                      "pyserial": _pyserial_version(), "programmer": b.programmer,
-                     "programmer_version": b.programmer_version},
+                     "programmer_version": b.programmer_version,
+                     "esp_bridge": (f"{BRIDGE_ID} {b.ctx.bridge.version}" if b.ctx.bridge else None)},
         "firmware": {"images_dir": str(b.ctx.images.dir), "manifest_sha256": b.ctx.images.manifest_digest(),
                      "manifest": b.ctx.images.manifest},
         "bench_name": b.bench_name, "board_uid_hash": scfg.hash_id(b.ctx.uid) if b.ctx.uid else None,
@@ -279,9 +371,18 @@ def _pyserial_version() -> str | None:
 
 
 def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = False) -> dict:
-    run_dir = new_run_dir(scfg, f"calibrate_{design}" + ("_sim" if args.sim else ""))
-    b = open_bench(args, scfg, design, "calibrate", run_dir / "serial.log", 0)
-    traces, windows, update_s, scen = [], [], [], []
+    L = target_layout(args)
+    tgt = "" if L.target == "f407" else f"_{L.target}"
+    run_dir = new_run_dir(scfg, f"calibrate_{design}{tgt}" + ("_sim" if args.sim else ""))
+    # calibration measures the update itself: the ESP reset source plays no part in it
+    saved_src = getattr(args, "reset_source", None)
+    args.reset_source = None
+    try:
+        b = open_bench(args, scfg, design, "calibrate", run_dir / "serial.log", 0)
+    finally:
+        args.reset_source = saved_src
+    bridge = b.ctx.bridge
+    traces, windows, update_s, scen, esp_windows = [], [], [], [], []
     plans = make_plans("calibrate", runs, 0, None, Opts())
     if design == "ab":
         # One update per extra scenario, so the calibration knows which fault points occur there
@@ -291,7 +392,10 @@ def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = Fa
         plans.append(TrialPlan(runs + 1, 0, "calibrate", faults.trial_seed(0, "calibrate", runs + 1),
                                fault_type="calibrate", trace=True, scenario="rollback", new_base="v2crash"))
     try:
+        if bridge is not None:
+            bridge.time_on(True)
         for p in plans:
+            tl_mark = len(bridge.timeline) if bridge is not None else 0
             row, ex = run_trial(b.ctx, p)
             want = "ESKİ" if p.scenario == "rollback" else "YENİ"
             if row["outcome"] != want:
@@ -307,16 +411,26 @@ def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = Fa
             if p.scenario != "normal":
                 continue
             up = ex["transfer"]
-            begin_tx_s = (len("UPD BEGIN ") + 684 + 2) * 10 / 115200
+            begin_tx_s = (len("UPD BEGIN ") + L.header_b64_len + 2) * 10 / 115200
             windows.append(int((up.t_commit - up.t_begin - begin_tx_s) * 1e6))
             if row.get("update_s"):
                 update_s.append(row["update_s"])
+            if bridge is not None:
+                w = faults.esp_windows_from_timeline(bridge.timeline[tl_mark:], L.chunk)
+                if w is None:
+                    raise BenchError("calibration_failed", "No ESP TXDONE/RXT timestamps for the update lines.",
+                                     ["Bridge firmware without TIME ON? Re-upload esp32/bridge",
+                                      f"See {run_dir / 'serial.log'}"])
+                esp_windows.append(w)
+        if bridge is not None:
+            bridge.time_on(False)
     finally:
         b.ctx.link.flush_log()
         b.stack.close()
     cal = faults.build_calibration(traces, windows, update_s, design, bool(args.sim),
-                                   b.ctx.images.manifest_digest(), scen)
-    path = faults.save_calibration(scfg.runs_dir, bool(args.sim), design, cal)
+                                   b.ctx.images.manifest_digest(), scen, L.target, esp_windows)
+    cal["link"] = link_kind(args, L)
+    path = faults.save_calibration(scfg.runs_dir, bool(args.sim), design, cal, L.target)
     return {"path": str(path), "calibration": cal, "report_dir": str(run_dir)}
 
 
@@ -325,9 +439,10 @@ def cmd_calibrate(args, scfg: StressConfig) -> dict:
     r = calibrate(args, scfg, design, args.runs)
     cal = r["calibration"]
     n_pts = len(faults.sweep_points(cal))
-    return bench.ok_result("calibrate", f"Calibrated design={design}: {len(cal['phases'])} phases, "
-                           f"update window {cal['update_window_us'] / 1e6:.3f} s, {n_pts} default sweep points.",
-                           **r)
+    esp = (f", {len(faults.sweep_points(cal, source='esp'))} esp sweep points" if cal.get("esp") else "")
+    return bench.ok_result("calibrate", f"Calibrated {cal.get('target', 'f407')} design={design}: "
+                           f"{len(cal['phases'])} phases, update window {cal['update_window_us'] / 1e6:.3f} s, "
+                           f"{n_pts} default sweep points{esp}.", **r)
 
 
 def cmd_report(args, scfg: StressConfig) -> dict:
@@ -351,14 +466,19 @@ def cmd_doctor(args, scfg: StressConfig) -> dict:
     add("stress.toml", scfg.path is not None, str(scfg.path) if scfg.path else
         "not found, defaults in use (copy stress.example.toml)", required=False)
     add("salt", bool(scfg.salt), "set" if scfg.salt else "empty: UID/ST-Link hashes are unsalted", required=False)
-    images = sim_images(scfg) if args.sim else ImageSet.load(scfg.images_dir)
+    L = target_layout(args)
+    link_k = link_kind(args, L)
+    add("target", True, f"{L.target} (link={link_k})", required=False)
+    images = sim_images(scfg, L) if args.sim else ImageSet.load(scfg.images_dir_for(L.target), L)
     add("images_dir", images.dir.is_dir(), str(images.dir))
+    tp = images.target_problem()
+    add("images target", tp is None, tp or f"manifest target={images.manifest_target}")
     missing = [f"{b}_{s}.img" for b in REQUIRED_BASES for s in "AB" if not images.has(b, s)]
     add("images", not missing, "all present" if not missing else "missing: " + ", ".join(missing))
     bad_hdr = []
     for img in images.images.values():
         if img.base in ("v1", "v2", *ROLLBACK_VARIANTS, "old"):
-            code = header_error(img.header, img.slot)
+            code = header_error(img.header, img.slot, layout=L)
             if code:
                 bad_hdr.append(f"{img.name}: {code}")
     add("image headers", not bad_hdr, "ok" if not bad_hdr else "; ".join(bad_hdr))
@@ -370,19 +490,46 @@ def cmd_doctor(args, scfg: StressConfig) -> dict:
     add("manifest.json", bool(images.manifest) and not probs,
         "hashes match" if images.manifest and not probs else ("missing" if not images.manifest else "; ".join(probs)))
     for design in ("ab", "naive"):
-        p = faults.calibration_path(scfg.runs_dir, args.sim)
+        p = faults.calibration_path(scfg.runs_dir, args.sim, L.target)
         try:
-            cal = faults.load_calibration(scfg.runs_dir, args.sim, design)
+            cal = faults.load_calibration(scfg.runs_dir, args.sim, design, L.target)
             stale = cal.get("manifest_sha256") != images.manifest_digest()
             add(f"calibration {design}", not stale, f"{p} ({cal.get('created')})" +
-                (": STALE, made with other images" if stale else ""), required=False)
+                (": STALE, made with other images" if stale else "") +
+                ("; esp windows" if cal.get("esp") else "; no esp windows"), required=False)
         except BenchError:
             add(f"calibration {design}", False, f"none in {p}; run calibrate", required=False)
+    if link_k == "esp":
+        port = str(scfg.get("esp", "port") or "")
+        add("esp port configured", bool(port) or args.sim, port or ("sim" if args.sim else "empty: set [esp] port"))
+        if args.sim:
+            from .sim import SimBoard
+            from .sim_esp import SimEspPort
+            try:
+                v = EspBridgeTransport(SimEspPort(SimBoard(layout=L))).version
+                add("esp PING", True, f"[sim] {BRIDGE_ID} {v}")
+            except BenchError as e:
+                add("esp PING", False, e.summary)
+        elif port and not args.no_hardware:
+            try:
+                t = bench.SerialTransport(port, int(scfg.get("esp", "baud")))
+                try:
+                    v = EspBridgeTransport(t).version
+                    add("esp PING", True, f"{port}: {BRIDGE_ID} {v}")
+                finally:
+                    t.close()
+            except BenchError as e:
+                add("esp PING", False, e.summary)
+        elif port:
+            add("esp PING", True, "skipped (--no-hardware)", required=False)
     if not args.sim:
         try:
-            cfg = bench.load_config(args.config, False)
+            cfg = bench.load_config(scfg.bench_config_for(L.target, args.config), False)
             add("bench.toml", True, str(cfg.path))
             add("probe backend", cfg.get("probe", "backend") == "openocd", cfg.get("probe", "backend"))
+            if L.target == "c031":
+                tgt = str(cfg.get("probe", "openocd_target") or "")
+                add("openocd target", "stm32c0" in tgt, tgt or "empty (want target/stm32c0x.cfg)")
             port = cfg.get("serial", "port")
             add("serial port configured", bool(port), port or "empty")
             if not args.no_hardware:
@@ -422,7 +569,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(s, n=True):
         s.add_argument("--sim", action="store_true", help="Use the simulator (no hardware)")
+        s.add_argument("--config", default=argparse.SUPPRESS,
+                       help="bench.toml path (same as the global --config; c031 default: bench-c031.toml)")
         s.add_argument("--design", choices=("ab", "naive"))
+        s.add_argument("--target", choices=TARGETS, default="f407",
+                       help="f407 (STM32F407 Discovery, default) or c031 (NUCLEO-C031C6, SPEC-C031C6)")
+        s.add_argument("--link", choices=("esp", "vcp"),
+                       help="esp: through the ESP32-S3 bridge, VCP as witness (default on c031); "
+                            "vcp: the board's serial port only (default on f407)")
         if n:
             s.add_argument("--n", type=int, help="Trials (default per test; reset_sweep: all points)")
             s.add_argument("--seed", type=int, default=1)
@@ -435,10 +589,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="reset_random/reset_sweep/double_fault: baseline golden_ab_metafull before every "
                             "trial (META0 one record short of full: the post-commit append rotates)")
 
+    def reset_src(s):
+        s.add_argument("--reset-source", choices=("hook", "esp"),
+                       help="reset_random/reset_sweep/naive_control: hook = in-target FAULT ARM (default); "
+                            "esp = ESP32 NRST pulse armed on a protocol line (needs --link esp)")
+
     s = sub.add_parser("run", help="Run a test")
     s.add_argument("test", choices=sorted(TESTS))
     common(s)
     meta_full(s)
+    reset_src(s)
     s.add_argument("--baseline", choices=("any", "strict"), default="any")
     s.add_argument("--observe-s", type=float)
     s.add_argument("--resume-limit-s", type=float)
@@ -448,6 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("test", choices=sorted(TESTS))
     common(s)
     meta_full(s)
+    reset_src(s)
     s.add_argument("--limit", type=int, default=0, help="Print at most this many trials")
 
     s = sub.add_parser("calibrate", help="TRACE ON updates; writes stress_runs/calibration.json")
@@ -470,7 +631,8 @@ COMMANDS = {"run": cmd_run, "plan": cmd_plan, "calibrate": cmd_calibrate, "repor
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    for k in ("sim", "design", "n", "seed", "step_us", "max_points_per_phase", "rate"):
+    for k in ("sim", "design", "n", "seed", "step_us", "max_points_per_phase", "rate", "target", "link",
+              "reset_source"):
         if not hasattr(args, k):
             setattr(args, k, None)
     try:

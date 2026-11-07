@@ -7,11 +7,10 @@ import zlib
 from dataclasses import dataclass, field
 
 from .images import Image
-from .layout import CHUNK, HEADER_SIZE
 from .link import Link
 from .proto import BlStatus, ERR_CRC_RE, ERR_SEQ_RE, OK_ERASED_RE, OK_OFF_RE, err_code, fault_arm
 
-BEGIN_TIMEOUT_S = 3.0
+BEGIN_TIMEOUT_S = 3.0             # F407 (a 16 KB sector erase); the C031 uses layout.begin_timeout_s (1 s)
 REPLY_TIMEOUT_S = 1.0
 # SPEC: 1 s. It must stay well below the BL's 3 s inactivity timeout: a lost END has to be retried
 # before the BL gives up. A slow END (META1 rotation) is still fine: the late OK COMMIT is accepted
@@ -70,6 +69,8 @@ class Injector:
                     c = chr(self.rng.randint(0x21, 0x7E))
                 link.note(f"noise: corrupt char {i}")
                 line = line[:i] + c + line[i + 1:]
+                link.send_line(line, raw=True)          # ESP bridge: TXH (injected bytes)
+                return "sent"
         link.send_line(line)
         return "sent"
 
@@ -99,10 +100,18 @@ class TransferResult:
 
 
 class Updater:
-    def __init__(self, link: Link, inj: Injector | None = None, max_retries: int = 8):
+    """before_send(kind, index): called right before each protocol line goes out (kind BEGIN, DATA
+    with the chunk number, END); the ESP reset source arms its NRST pulse there."""
+
+    def __init__(self, link: Link, inj: Injector | None = None, max_retries: int = 8, before_send=None):
         self.link = link
         self.inj = inj or Injector()
         self.max_retries = max_retries
+        self.before_send = before_send
+
+    def _before(self, kind: str, index: int):
+        if self.before_send is not None:
+            self.before_send(kind, index)
 
     def _await(self, accept, timeout: float):
         deadline = self.link.clock.now() + timeout
@@ -131,6 +140,8 @@ class Updater:
 
     def transfer(self, image: Image) -> TransferResult:
         r = TransferResult()
+        L = image.layout
+        HEADER_SIZE, CHUNK = L.header_size, L.chunk
         hdr, payload = image.data[:HEADER_SIZE], image.data[HEADER_SIZE:]
         left = self.left_update_mode()
         if left is not None:
@@ -150,6 +161,7 @@ class Updater:
         line = "UPD BEGIN " + base64.b64encode(hdr).decode()
         tries = 0
         while True:
+            self._before("BEGIN", 0)
             if r.t_begin is None:
                 r.t_begin = self.link.clock.now()
             how = self.inj.send(self.link, line, (0, HEADER_SIZE), len("UPD BEGIN "))
@@ -157,7 +169,8 @@ class Updater:
                 r.status = "cut"
                 return r
             kind, e = self._await(lambda ev: OK_ERASED_RE.match(ev.line)
-                                  or (ev.data[0] == "ERR" and err_code(ev.data[1]) in BEGIN_ERRS), BEGIN_TIMEOUT_S)
+                                  or (ev.data[0] == "ERR" and err_code(ev.data[1]) in BEGIN_ERRS),
+                                  L.begin_timeout_s)
             if kind == "reset":
                 r.erases += 1
                 return reset(e)
@@ -189,6 +202,7 @@ class Updater:
             b64 = base64.b64encode(chunk).decode()
             pre = f"UPD DATA {off} "
             line = f"{pre}{b64} {zlib.crc32(chunk):08x}"
+            self._before("DATA", off // CHUNK)
             how = self.inj.send(self.link, line, (HEADER_SIZE + off, HEADER_SIZE + off + len(chunk)), len(pre))
             if how == "cut":
                 r.status = "cut"
@@ -232,6 +246,7 @@ class Updater:
         # END
         tries = 0
         while True:
+            self._before("END", 0)
             how = self.inj.send(self.link, "UPD END")
             kind, e = self._await(lambda ev: ev.line.strip() == "OK COMMIT"
                                   or (ev.data[0] == "ERR" and err_code(ev.data[1]) in END_ERRS), END_TIMEOUT_S)

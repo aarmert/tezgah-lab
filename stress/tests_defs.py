@@ -26,11 +26,14 @@ class TrialPlan:
     expect_err: str | None = None
     trace: bool = False
     scenario: str = "normal"                        # faults.SCENARIOS
+    reset_source: str = "hook"                      # esp: entry0 is an ESP32 NRST pulse, not FAULT ARM
 
     def describe(self) -> dict:
         d = {"trial": self.trial, "trial_seed": self.trial_seed, "fault_type": self.fault_type}
         if self.scenario != "normal":
             d["scenario"] = self.scenario
+        if self.reset_source != "hook":
+            d["reset_source"] = self.reset_source
         if self.entry0:
             d["entry0"] = list(self.entry0)
         if self.entry1:
@@ -53,6 +56,7 @@ class Opts:
     rate: float = 0.05
     meta_near_full: bool = False      # reset_random/reset_sweep/double_fault: baseline golden_ab_metafull
     design: str = "ab"
+    reset_source: str = "hook"        # hook | esp (SPEC-ESP32 3; reset_random/reset_sweep/naive_control)
 
 
 @dataclass
@@ -81,6 +85,7 @@ TESTS = {t.name: t for t in (
 
 
 META_FULL_TESTS = ("reset_random", "reset_sweep", "double_fault")
+ESP_RESET_TESTS = ("reset_random", "reset_sweep", "naive_control")
 
 
 def trial_scenario(test: str, i: int, opts: Opts) -> str:
@@ -99,10 +104,14 @@ def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts
     td = TESTS.get(test) or TestDef(test, "-", "calibration (TRACE ON)", True, False, 4)
     if opts.meta_near_full and test not in META_FULL_TESTS:
         raise BenchError("bad_argument", f"--meta-near-full applies to {', '.join(META_FULL_TESTS)}, not {test}.")
+    src = opts.reset_source
+    if src == "esp" and test not in ESP_RESET_TESTS and test != "calibrate":
+        raise BenchError("bad_argument", f"--reset-source esp applies to {', '.join(ESP_RESET_TESTS)}, not {test}.")
     points: dict[str, list] = {}
     if test in ("reset_sweep", "double_fault", "naive_control"):
         for sc in sorted({trial_scenario(test, i, opts) for i in range(2)}):
-            points[sc] = faults.shuffled(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc),
+            points[sc] = faults.shuffled(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc,
+                                                             src if test in ESP_RESET_TESTS else "hook"),
                                          seed, test)
             if not points[sc]:
                 raise BenchError("calibration_invalid", f"The calibration has no fault points for '{sc}'.",
@@ -121,7 +130,7 @@ def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts
         elif test == "line_noise":
             p.fault_type, p.noise_rate = "noise", opts.rate
         elif test == "reset_random":
-            p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal))
+            p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal, src))
         elif test == "reset_sweep":
             p.fault_type, p.entry0 = "reset_sweep", tuple(points[sc][i % len(points[sc])])
         elif test == "double_fault":
@@ -140,9 +149,11 @@ def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts
                 pts = points["normal"]
                 p.fault_type, p.entry0 = "reset_sweep", tuple(pts[(i // 2) % len(pts)])
             else:
-                p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal))
+                p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal, src))
         elif test == "calibrate":
             p.fault_type, p.trace = "calibrate", True
+        if src == "esp" and test in ESP_RESET_TESTS:
+            p.fault_type, p.reset_source = "nrst_esp", "esp"
         plans.append(p)
     return plans
 

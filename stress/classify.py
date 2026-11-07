@@ -174,12 +174,15 @@ class BootCount:
         return max(0, self.boots - self.explained)
 
 
-def count_boots(events: list[Event]) -> BootCount:
+def count_boots(events: list[Event], external_resets: int = 0) -> BootCount:
     """Every reset makes the BL print one status line (unless the next reset comes first, which
     only lowers `boots`). Known causes: the app's OK UPD / OK RESET and the BL's OK COMMIT replies,
     an app HARDFAULT line (it resets), the faults that actually expired ('BL fault_fired n', n
-    resets), and IWDG resets (IWDG in the status line's reset= flags)."""
+    resets), and IWDG resets (IWDG in the status line's reset= flags). external_resets: NRST pulses
+    the host fired itself (the ESP32 bridge's `ESP NRST FIRED`, --reset-source esp)."""
     causes = {"commands": 0, "hardfault": 0, "fired": 0, "iwdg": 0}
+    if external_resets:
+        causes["nrst"] = int(external_resets)
     boots = 0
     for e in events:
         if e.kind == "status":
