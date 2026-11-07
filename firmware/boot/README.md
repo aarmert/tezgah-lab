@@ -24,10 +24,12 @@ Outputs in `firmware/boot/build/`:
 |---|---|
 | `bl_ab.elf/.bin`, `bl_ab_hooks.*` | A/B bootloader, release and `-DFAULT_HOOKS` |
 | `bl_naive.*`, `bl_naive_hooks.*` | naive bootloader, release and hooks |
-| `app_<variant>_<A\|B>.elf/.bin` | apps linked at `slot_base + 0x200` (variants: v1, v2, v2crash, v2hang, v2noconfirm, old) |
+| `app_<variant>_<A\|B>[_nohooks].elf/.bin` | apps linked at `slot_base + 0x200` (variants: v1, v2, v2crash, v2hang, v2noconfirm, old), hooks and release (`_nohooks`) |
 | `images/*.img` | every image of SPEC section 2 (header + payload) |
 | `images/golden_ab.bin/.hex`, `golden_naive.*` | 0x08000000..0x0801FFFF, **hooks** BL, META0 initial record, v1 in A |
-| `images/golden_*_nohooks.*` | the same with the release BL |
+| `images/golden_*_nohooks.*` | the same with the release BL and the release v1 app |
+| `images/golden_ab_metafull.*` | `golden_ab` with META0 one record short of full (511/512): the next update rotates (`--meta-near-full`) |
+| `images/release/` | the whole image set from the release apps (no `FAULT_HOOKS`), same names, own manifest |
 | `images/manifest.json` | name → {sha256, size, payload_sha256, version, slot, variant, security_counter, payload_size, link_addr, expected_err, ...} |
 
 Use the `.hex` golden files with OpenOCD `program`: a raw `.bin` has no address. The hex includes
@@ -147,8 +149,10 @@ unknown → `ERR unknown command`. Commands are not case sensitive (the line is 
 - The IWDG is fed from the main loop always (reloading a stopped IWDG is harmless and does not start it).
 - HardFault (CRASH, v2crash) → `HARDFAULT pc=.. lr=.. cfsr=.. hfsr=..`, then reset. This differs from
   `firmware/main.c`, which halts: a trial crash has to count as a failed attempt.
-- Every app is built with `FAULT_HOOKS`. The image table has a single set of apps, and the CONFIRM
-  fault point lives in the app. Only the BLs come in two flavours.
+- Every app is built twice: with `FAULT_HOOKS` (`app_<variant>_<slot>`, the CONFIRM fault point
+  lives in the app; `images/`) and without (`app_<variant>_<slot>_nohooks`; `images/release/`, and
+  the v1 in `golden_*_nohooks`). A release board (`golden_*_nohooks`) then has no FAULT command
+  anywhere, matching the BL status line without `hooks`.
 
 ## Fault hook (hooks builds)
 

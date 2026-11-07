@@ -63,10 +63,15 @@ BAD = {"bad_crc": "IMG_CRC", "wrong_board": "BOARD", "truncated": "SHORT", "over
        "old": "VERSION"}
 OVERSIZE_PAYLOAD = 20000
 WRONG_BOARD_ID = 0xC0C0C0C0
-# Which BL build goes into which golden file
-GOLDEN = {"golden_ab": "bl_ab_hooks", "golden_naive": "bl_naive_hooks",
-          "golden_ab_nohooks": "bl_ab", "golden_naive_nohooks": "bl_naive",
-          "golden_ab_metafull": "bl_ab_hooks"}
+# golden file -> (BL build, app build suffix of the v1 in slot A). The *_nohooks goldens are a
+# release board: release BL and release (no FAULT_HOOKS) app.
+GOLDEN = {"golden_ab": ("bl_ab_hooks", ""), "golden_naive": ("bl_naive_hooks", ""),
+          "golden_ab_nohooks": ("bl_ab", "_nohooks"), "golden_naive_nohooks": ("bl_naive", "_nohooks"),
+          "golden_ab_metafull": ("bl_ab_hooks", "")}
+# images/release/: the whole image set from the release apps, with release goldens under the usual
+# names, so a stress run on a release board only needs images_dir = .../images/release.
+RELEASE_DIR = "release"
+GOLDEN_RELEASE = {"golden_ab": ("bl_ab", "_nohooks"), "golden_naive": ("bl_naive", "_nohooks")}
 # golden_ab_metafull: META0 (512 records) holds this many, so the first append after the next
 # update's TRIAL record rotates into META1 (SPEC 2 and 8, --meta-near-full).
 META0_RECORDS = 0x4000 // 32
@@ -135,8 +140,14 @@ def sha(b: bytes) -> str:
 
 
 def build_all(build: Path = BUILD) -> dict:
-    """Reads build/app_<variant>_<slot>.bin and build/bl_*.bin, writes build/images/."""
-    out = build / "images"
+    """Reads build/app_<variant>_<slot>[_nohooks].bin and build/bl_*.bin and writes build/images/
+    (hooks apps) and build/images/release/ (release apps). Returns the images/ manifest."""
+    m = build_set(build, build / "images", "", GOLDEN)
+    build_set(build, build / "images" / RELEASE_DIR, "_nohooks", GOLDEN_RELEASE)
+    return m
+
+
+def build_set(build: Path, out: Path, app_suffix: str, goldens: dict) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, dict] = {}
 
@@ -144,18 +155,21 @@ def build_all(build: Path = BUILD) -> dict:
         (out / name).write_bytes(data)
         manifest[name] = {"sha256": sha(data), "size": len(data), **info}
 
+    def payload(var: str, slot: str, suffix: str) -> bytes:
+        p = pad4((build / f"app_{var}_{slot}{suffix}.bin").read_bytes())
+        if len(p) > PAYLOAD_MAX:
+            raise ValueError(f"app_{var}_{slot}{suffix}: payload {len(p)} > {PAYLOAD_MAX}")
+        return p
+
     payloads: dict[tuple[str, str], bytes] = {}
     for var, meta in APPS.items():
         for slot in SLOTS:
-            p = pad4((build / f"app_{var}_{slot}.bin").read_bytes())
-            if len(p) > PAYLOAD_MAX:
-                raise ValueError(f"app_{var}_{slot}: payload {len(p)} > {PAYLOAD_MAX}")
-            payloads[(var, slot)] = p
+            p = payloads[(var, slot)] = payload(var, slot, app_suffix)
             hdr = make_header(p, meta["version"], meta["sc"], payload_addr(slot))
             emit(f"{var}_{slot}.img", hdr + p, payload_sha256=sha(p), version=meta["version"],
                  slot=slot, variant=var, security_counter=meta["sc"], payload_size=len(p),
                  link_addr=f"0x{payload_addr(slot):08X}",
-                 expected_err=BAD.get(var))
+                 expected_err=BAD.get(var), hooks=not app_suffix)
 
     for slot in SLOTS:
         v2 = payloads[("v2", slot)]
@@ -184,15 +198,16 @@ def build_all(build: Path = BUILD) -> dict:
              payload_sha256=sha(big), payload_size=OVERSIZE_PAYLOAD, variant="oversize",
              expected_err=BAD["oversize"], **common)
 
-    # Golden flash images: BL, META0 with the initial record, v1 in A, B and META1 erased
-    v1a = (out / "v1_A.img").read_bytes()
+    # Golden flash images: BL, META0 with the initial record(s), v1 in A, B and META1 erased
     first = meta_record(seq=1, kind=META_KIND["CONFIRMED"], active=0, trial=0xFF, attempts=0,
                         min_sc=1, erase_self=0, erase_other=0)
     full = first + b"".join(meta_record(seq=n, kind=META_KIND["CONFIRM"], active=0, trial=0xFF, attempts=0,
                                         min_sc=1, erase_self=0, erase_other=0)
                             for n in range(2, META_FULL_RECORDS + 1))
-    for gname, blname in GOLDEN.items():
+    for gname, (blname, suffix) in goldens.items():
         rec = full if gname.endswith("_metafull") else first
+        p = payload("v1", "A", suffix)
+        v1a = make_header(p, APPS["v1"]["version"], APPS["v1"]["sc"], payload_addr("A")) + p
         bl = (build / f"{blname}.bin").read_bytes()
         if len(bl) > BL_SIZE:
             raise ValueError(f"{blname}: {len(bl)} > {BL_SIZE}")
@@ -205,7 +220,7 @@ def build_all(build: Path = BUILD) -> dict:
         data = bytes(img)
         design = "naive" if "naive" in gname else "ab"
         info = {"design": design, "bl": blname, "bl_sha256": sha(bl), "version": "1.0.0",
-                "slot": "A", "payload_sha256": manifest["v1_A.img"]["payload_sha256"],
+                "slot": "A", "payload_sha256": sha(p), "app": f"app_v1_A{suffix}",
                 "base": f"0x{GOLDEN_BASE:08X}", "meta0_records": len(rec) // 32}
         emit(f"{gname}.bin", data, **info)
         emit(f"{gname}.hex", ihex(data, GOLDEN_BASE).encode(), **info)

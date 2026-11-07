@@ -3,8 +3,9 @@
 Builds the bootloader stress-test firmware (docs/stress/SPEC.md) into firmware/boot/build/:
 
   bl_ab, bl_ab_hooks, bl_naive, bl_naive_hooks         (.elf/.bin/.map, S0 @ 0x08000000)
-  app_<variant>_<A|B>                                  (.elf/.bin/.map, slot_base + 0x200)
-  images/  every image of SPEC section 2, golden_*.bin/.hex, manifest.json  (via mkimage.py)
+  app_<variant>_<A|B>[_nohooks]                        (.elf/.bin/.map, slot_base + 0x200)
+  images/          every image of SPEC section 2, golden_*.bin/.hex, manifest.json  (via mkimage.py)
+  images/release/  the same image set built without FAULT_HOOKS (release BL + release apps)
 
     python firmware/boot/build_boot.py          # human-readable
     python firmware/boot/build_boot.py --json   # ok, summary, error_type, likely_causes (+ sizes)
@@ -61,12 +62,14 @@ def targets() -> list[dict]:
                       "origin": mkimage.BL_BASE, "length": BL_MAX, "max": BL_MAX})
     for var, m in mkimage.APPS.items():
         for i, slot in enumerate(mkimage.SLOTS):
-            defs = ["FAULT_HOOKS", f"APP_SLOT={i}", f'APP_VERSION="{m["version"]}"',
-                    f'APP_SUFFIX="{m["suffix"]}"']
-            if m["define"]:
-                defs.append(m["define"])
-            t.append({"name": f"app_{var}_{slot}", "kind": "app", "src": APP_SRC, "defs": defs,
-                      "origin": mkimage.payload_addr(slot), "length": APP_MAX, "max": APP_MAX})
+            for hooks in (True, False):     # app_<var>_<slot> (hooks) and app_<var>_<slot>_nohooks (release)
+                defs = (["FAULT_HOOKS"] if hooks else []) + [f"APP_SLOT={i}", f'APP_VERSION="{m["version"]}"',
+                                                             f'APP_SUFFIX="{m["suffix"]}"']
+                if m["define"]:
+                    defs.append(m["define"])
+                t.append({"name": f"app_{var}_{slot}" + ("" if hooks else "_nohooks"), "kind": "app",
+                          "src": APP_SRC, "defs": defs,
+                          "origin": mkimage.payload_addr(slot), "length": APP_MAX, "max": APP_MAX})
     return t
 
 

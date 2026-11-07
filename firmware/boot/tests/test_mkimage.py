@@ -107,6 +107,26 @@ class TestAppImages(unittest.TestCase):
                     # the payload equals the linked binary
                     self.assertEqual(payload, mk.pad4((BUILD / f"app_{var}_{slot}.bin").read_bytes()))
 
+    def test_release_set(self):
+        """images/release: the same names, built from the apps without FAULT_HOOKS (SPEC 2, 6)."""
+        rel = IMAGES / "release"
+        m = json.loads((rel / "manifest.json").read_text())
+        top = json.loads((IMAGES / "manifest.json").read_text())
+        self.assertEqual(set(m), {p.name for p in rel.iterdir() if p.name != "manifest.json"})
+        self.assertEqual({n for n in top if n.endswith(".img")}, {n for n in m if n.endswith(".img")})
+        for var, info in mk.APPS.items():
+            for slot in mk.SLOTS:
+                h, raw, payload = split((rel / f"{var}_{slot}.img").read_bytes())
+                self.assertEqual(payload, mk.pad4((BUILD / f"app_{var}_{slot}_nohooks.bin").read_bytes()))
+                self.assertTrue(header_crc_ok(raw))
+                self.assertEqual(h["payload_crc32"], zlib.crc32(payload) & 0xFFFFFFFF)
+                self.assertNotIn(b"OK FAULT ARM ", payload, (var, slot))
+                self.assertIn((info["version"] + info["suffix"]).encode() + b"\0", payload)
+                self.assertFalse(m[f"{var}_{slot}.img"]["hooks"])
+                self.assertTrue(top[f"{var}_{slot}.img"]["hooks"])
+        for bad, code in mk.BAD.items():
+            self.assertEqual(m[f"{bad}_A.img"]["expected_err"], code)
+
     def test_a_and_b_differ_only_by_link(self):
         a = split(img("v1_A.img"))[2]
         b = split(img("v1_B.img"))[2]
@@ -171,8 +191,8 @@ class TestBadImages(unittest.TestCase):
 
 
 class TestGolden(unittest.TestCase):
-    def check(self, name: str, bl: str):
-        g = img(name)
+    def check(self, name: str, bl: str, v1: bytes | None = None, d: Path = IMAGES):
+        g = (d / name).read_bytes()
         self.assertEqual(len(g), 0x20000)
         b = (BUILD / f"{bl}.bin").read_bytes()
         self.assertLessEqual(len(b), 16384)
@@ -185,14 +205,16 @@ class TestGolden(unittest.TestCase):
                          (0x4154454D, 1, 1, 0, 0xFF, 0, 1, 0, 0, 0xFFFFFFFF))
         self.assertEqual(crc, zlib.crc32(rec[:28]) & 0xFFFFFFFF)
         self.assertEqual(g[0x4020:0x8000], b"\xff" * (0x8000 - 0x4020))
-        v1 = img("v1_A.img")
+        v1 = v1 or img("v1_A.img")
         self.assertEqual(g[0x8000:0x8000 + len(v1)], v1)
         self.assertEqual(g[0x8000 + len(v1):0xC000], b"\xff" * (0xC000 - 0x8000 - len(v1)))
         self.assertEqual(g[0xC000:0x20000], b"\xff" * (0x20000 - 0xC000), "B and META1 erased")
 
     def test_golden_ab(self):
+        rel_v1 = (IMAGES / "release" / "v1_A.img").read_bytes()
         self.check("golden_ab.bin", "bl_ab_hooks")
-        self.check("golden_ab_nohooks.bin", "bl_ab")
+        self.check("golden_ab_nohooks.bin", "bl_ab", rel_v1)          # release BL + release app
+        self.check("golden_ab.bin", "bl_ab", rel_v1, IMAGES / "release")
 
     def test_golden_metafull(self):
         g, base = img("golden_ab_metafull.bin"), img("golden_ab.bin")
@@ -215,8 +237,10 @@ class TestGolden(unittest.TestCase):
         self.assertEqual(m["golden_ab.bin"]["meta0_records"], 1)
 
     def test_golden_naive(self):
+        rel_v1 = (IMAGES / "release" / "v1_A.img").read_bytes()
         self.check("golden_naive.bin", "bl_naive_hooks")
-        self.check("golden_naive_nohooks.bin", "bl_naive")
+        self.check("golden_naive_nohooks.bin", "bl_naive", rel_v1)
+        self.check("golden_naive.bin", "bl_naive", rel_v1, IMAGES / "release")
 
     def test_hex_matches_bin(self):
         for name in ("golden_ab", "golden_naive", "golden_ab_nohooks", "golden_naive_nohooks", "golden_ab_metafull"):
@@ -239,7 +263,7 @@ class TestGolden(unittest.TestCase):
 class TestManifest(unittest.TestCase):
     def test_manifest(self):
         m = json.loads((IMAGES / "manifest.json").read_text())
-        files = {p.name for p in IMAGES.iterdir() if p.name != "manifest.json"}
+        files = {p.name for p in IMAGES.iterdir() if p.is_file() and p.name != "manifest.json"}
         self.assertEqual(set(m), files)
         for name, info in m.items():
             with self.subTest(name=name):
@@ -279,7 +303,7 @@ class TestElfStatic(unittest.TestCase):
         return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
 
     def elves(self):
-        return list(self.BLS) + [f"app_{v}_{s}" for v in mk.APPS for s in mk.SLOTS]
+        return list(self.BLS) + [f"app_{v}_{s}{h}" for v in mk.APPS for s in mk.SLOTS for h in ("", "_nohooks")]
 
     def test_bl_sizes(self):
         for bl in self.BLS:
@@ -298,10 +322,10 @@ class TestElfStatic(unittest.TestCase):
                 s = self.syms(e)
                 b = (BUILD / f"{e}.bin").read_bytes()
                 vec = struct.unpack_from("<98I", b, 0)
-                base = 0x08000000 if e.startswith("bl") else mk.SLOT_BASE[e[-1]] + 0x200
+                base = 0x08000000 if e.startswith("bl") else mk.SLOT_BASE[e.split("_")[2]] + 0x200
                 self.assertEqual(s["g_vectors"], base)
                 self.assertEqual(vec[0], 0x20020000)
-                hooks = e.endswith("_hooks") or e.startswith("app")
+                hooks = e.endswith("_hooks") or (e.startswith("app") and not e.endswith("_nohooks"))
                 if hooks:   # TIM2 (IRQ 28) -> RAM ISR
                     self.assertEqual(vec[16 + 28], s["TIM2_IRQHandler"] | 1)
                     self.assertTrue(0x20000000 <= vec[16 + 28] < 0x20020000)
