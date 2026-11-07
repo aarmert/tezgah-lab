@@ -9,3 +9,5 @@ stress_runs/
 stress.toml
 firmware/boot/build/
 .venv/
+esp32/build/
+bench-c031.toml
