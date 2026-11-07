@@ -325,7 +325,9 @@ class TestElfStatic(unittest.TestCase):
         for bl, design, hooks in (("bl_ab", "ab", ""), ("bl_ab_hooks", "ab", " hooks"),
                                   ("bl_naive", "naive", ""), ("bl_naive_hooks", "naive", " hooks")):
             b = (BUILD / f"{bl}.bin").read_bytes()
-            self.assertIn(f"BL v0.1 design={design}{hooks} slotA=".encode(), b, bl)
+            self.assertIn(f"BL v0.1 design={design}{hooks} target=f407 slotA=".encode(), b, bl)
+            # SPEC 4: an unrecognised line in update mode is ERR LINE (the host retries on it)
+            self.assertNotIn(b"ERR unknown command", b, bl)
             if design == "ab":
                 self.assertIn(b"BL resume", b, bl)
             else:
@@ -342,7 +344,79 @@ class TestElfStatic(unittest.TestCase):
                 self.assertIn(b" state=none attempts=0 seq=0 erases=0,0", b)
                 self.assertNotIn(b"ERR IMG_CRC", b, "naive has no image check")
             self.assertEqual(b"BL fault_fired " in b, bool(hooks), bl)
+            self.assertEqual(b"BL fault_cancelled " in b, bool(hooks), bl)
             self.assertEqual(b"OK FAULT ARM " in b, bool(hooks), bl)
+
+
+
+def c_func(src: str, signature: str) -> str:
+    """Body of the C function that starts with `signature` (up to the matching brace)."""
+    i = src.index(signature)
+    j = src.index("{", i)
+    depth = 0
+    for k in range(j, len(src)):
+        depth += {"{": 1, "}": -1}.get(src[k], 0)
+        if depth == 0:
+            return src[j:k + 1]
+    raise AssertionError(signature)
+
+
+def in_order(test, text: str, *parts: str):
+    pos = [text.index(x) for x in parts]
+    test.assertEqual(pos, sorted(pos), parts)
+
+
+class TestSourceContract(unittest.TestCase):
+    """C behaviour that stress/sim.py mirrors (stress/tests/test_sim_contract.py pins the sim side)."""
+
+    def src(self, name: str) -> str:
+        return re.sub(r"/\*.*?\*/", "", (BOOT / name).read_text(), flags=re.S)
+
+    def test_data_check_order(self):
+        body = c_func(self.src("bl_update.c"), "static void cmd_data(")
+        in_order(self, body, 'uart_line("ERR LINE")', 'uart_line("ERR STATE")', 'reply_err_off("CRC", off)',
+                 'reply_err_off("SEQ", x.written)', 'uart_line("ERR SIZE")', "fault_point(PH_DATA")
+        self.assertEqual(body.count('uart_line("ERR LINE")'), 2, "malformed DATA -> ERR LINE")
+        self.assertIn("(off & 3u) || off > x.written", body)
+
+    def test_update_mode_unknown_line_and_abort(self):
+        body = c_func(self.src("bl_update.c"), "void bl_update_mode(")
+        self.assertNotIn("unknown command", body)
+        tail = body[body.rindex("} else {"):]
+        self.assertIn('uart_line("ERR LINE")', tail)
+        abort = body[body.index('str_eq(l, "UPD ABORT")'):body.index('str_eq(l, "PING")')]
+        self.assertIn("return;", abort)
+        self.assertNotIn("system_reset", abort, "ABORT boots on, it does not reset (SPEC 4)")
+
+    def test_fault_counted_at_expiry(self):
+        src = self.src("fault.c")
+        isr = c_func(src, "RAMISR void TIM2_IRQHandler(")
+        in_order(self, isr, "record_expiry();", "SCB_AIRCR = AIRCR_SYSRESETREQ")
+        fp = c_func(src, "uint32_t fault_point(")
+        self.assertNotIn("expiry.count", fp)
+        self.assertNotIn("fired", fp)
+        in_order(self, fp, "noinit_commit();", "if (delay == 0)", "record_expiry();", "timer_start(delay);")
+        self.assertNotIn("fired_count", (BOOT / "noinit.h").read_text())
+        rec = c_func(src, "static inline __attribute__((always_inline)) void record_expiry(")
+        self.assertNotRegex(rec, r"\b(crc32|noinit_commit|uart_\w+)\s*\(", "the ISR must not call flash code")
+
+    def test_timer_delay_one_clamped(self):
+        body = c_func(self.src("fault.c"), "static void timer_start(")
+        self.assertIn("TIM2_ARR = us > 1u ? us - 1u : 1u;", body)
+
+    def test_boot_snapshot_before_boot_fault_point(self):
+        main = c_func(self.src("bl.c"), "int main(")
+        in_order(self, main, "noinit_check();", "fault_boot_snapshot();", "fault_point(PH_BOOT, 0)",
+                 "print_status();", "fault_print_report();", "boot_decision();")
+        snap = c_func(self.src("fault.c"), "void fault_boot_snapshot(")
+        self.assertNotIn("count -=", snap, "the snapshot clears nothing")
+
+    def test_expiry_outside_crc(self):
+        h = (BOOT / "noinit.h").read_text()
+        struct = h[h.index("typedef struct {\n    uint32_t magic;\n    uint32_t enter_update;"):]
+        in_order(self, struct, "uint32_t crc32;", "noinit_expiry_t expiry;", "} noinit_t;")
+        chk = c_func(self.src("noinit.c"), "int noinit_check(")
+        self.assertIn("offsetof(noinit_t, expiry)", chk)
 
 
 if __name__ == "__main__":

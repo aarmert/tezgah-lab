@@ -59,8 +59,9 @@ def open_bench(args, scfg: StressConfig, design: str, test: str, log_path: Path 
     try:
         images = load_images(scfg, args.sim, design)
         if args.sim:
-            from .sim import SimBoard, SimClock, SimProgrammer, SimSerial
-            board = SimBoard(seed=seed, golden=images.golden[design].read_bytes())
+            from .sim import SimBoard, SimClock, SimProgrammer, SimSerial, timings_from
+            board = SimBoard(seed=seed, golden=images.golden[design].read_bytes(),
+                             timings=timings_from(scfg.data.get("sim", {})))
             transport, clock, prog = SimSerial(board), SimClock(board), SimProgrammer(board)
             bench_name, probe_serial = "sim", "sim"
             wear_path = scfg.runs_dir / "wear_sim.json"

@@ -217,10 +217,13 @@ void fault_trace(uint32_t phase, int32_t index, uint32_t t0);
  * 0 otherwise. Without FAULT_HOOKS it always returns 0. */
 int  fault_command(const char *line);
 int  fault_timer_pending(void);
-/* BL: take (and clear in noinit) the fired count/last fault at entry, print it after the status
- * line as "BL fault_fired n PHASE idx delay". */
-void fault_snapshot_fired(void);
-void fault_print_fired(void);
+/* BL entry, before the BOOT fault point: decide whether the last started fault timer expired
+ * (fired) or not (cancelled) and take a snapshot of both counts. Nothing is cleared here, so a BOOT
+ * fault that resets on the spot loses nothing. */
+void fault_boot_snapshot(void);
+/* After the status line: "BL fault_fired n PHASE idx delay" and "BL fault_cancelled n PHASE idx
+ * delay" (n since the last report, details of the last one), then clears what was reported. */
+void fault_print_report(void);
 
 /* ---- startup ---- */
 extern const uint32_t g_vectors[];

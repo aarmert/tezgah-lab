@@ -23,7 +23,9 @@ META_SECTORS = (1, 4)
 HEADER_SIZE = 512
 MAX_PAYLOAD = SLOT_SIZE - HEADER_SIZE
 CHUNK = 192                      # max decoded bytes per UPD DATA
-MAX_LINE = 768                   # BL line buffer (SPEC 4; BEGIN carries 684 base64 chars)
+LINE_MAX_CHARS = 300             # BL: every update-mode line except UPD BEGIN (SPEC 4)
+BEGIN_MAX_CHARS = 700            # BL line buffer; "UPD BEGIN " + 684 base64 chars = 694
+APP_LINE_MAX = 96                # app command line buffer (app_rt.c)
 
 IMAGE_MAGIC = 0x4D495A54         # "TZIM"
 HEADER_VERSION = 1
@@ -65,5 +67,5 @@ def version_int(s: str) -> int:
 
 
 def looks_like_sp(word: int) -> bool:
-    """Naive BL boot check: word 0 of the payload is a plausible initial stack pointer in SRAM."""
-    return RAM_BASE < word <= RAM_TOP and word % 4 == 0
+    """Naive BL boot check (bl.c naive_bootable): RAM_BASE < word 0 of the payload <= RAM top."""
+    return RAM_BASE < word <= RAM_TOP

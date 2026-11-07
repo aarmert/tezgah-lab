@@ -102,20 +102,22 @@ static void cmd_begin(const char *b64) {
     uart_puts("OK ERASED "); uart_u32(us); uart_nl();
 }
 
+/* DATA check order (SPEC 4, the simulator mirrors it): malformed -> ERR LINE, no session ->
+ * ERR STATE, bad base64/CRC -> ERR CRC <off>, misaligned or beyond the next expected offset ->
+ * ERR SEQ <written>, bad length or past the image size -> ERR SIZE. */
 static void cmd_data(const char *p) {
     uint32_t off, crc, blen;
     if (!parse_u32(&p, &off)) { uart_line("ERR LINE"); return; }
     const char *b64 = next_token(&p, &blen);
-    if (!blen || !parse_hex32(&p, &crc) || *p) { reply_err_off("CRC", off); return; }
+    if (!blen || !parse_hex32(&p, &crc) || *p) { uart_line("ERR LINE"); return; }
     if (!x.active) { uart_line("ERR STATE"); return; }
     int n = b64_decode(b64, blen, s_chunk, CHUNK_MAX);
     if (n <= 0 || crc32(s_chunk, (uint32_t)n) != crc) { reply_err_off("CRC", off); return; }
     uint32_t len = (uint32_t)n;
-    if (off & 3u) { reply_err_off("SEQ", x.written); return; }
+    if ((off & 3u) || off > x.written) { reply_err_off("SEQ", x.written); return; }
     if ((len & 3u) || off + len > x.size) { uart_line("ERR SIZE"); return; }
 
     uint32_t addr = PAYLOAD_ADDR(x.slot) + off;
-    if (off > x.written) { reply_err_off("SEQ", x.written); return; }
     if (off < x.written) {
         /* Retry after a lost reply: OK again if it is already there, byte for byte */
         if (off + len <= x.written && mem_eq((const void *)addr, s_chunk, len)) {
@@ -195,13 +197,13 @@ void bl_update_mode(int mode) {
             x.active = 0;
             set_in_progress(0);
             uart_line("OK ABORT");
-            return;
+            return;                            /* no reset: the boot decision continues */
         } else if (str_eq(l, "PING")) {
             uart_line("PONG");
         } else if (fault_command(l)) {
             /* handled */
         } else {
-            uart_line("ERR unknown command");
+            uart_line("ERR LINE");             /* SPEC 4: any unrecognised line in update mode */
         }
     }
 }

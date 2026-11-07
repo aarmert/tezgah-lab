@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._bench import bench
-from .images import header_error, parse_header, slot_status_word, slot_valid
-from .layout import (CHUNK, GOLDEN_SIZE, HEADER_SIZE, MAX_LINE, PHASES, SECTORS, SLOT_BASE, SLOT_NUM,
+from .images import header_error, naive_header_error, naive_status_word, parse_header, slot_status_word, slot_valid
+from .layout import (APP_LINE_MAX, BEGIN_MAX_CHARS, CHUNK, GOLDEN_SIZE, HEADER_SIZE, LINE_MAX_CHARS, PHASES, SECTORS, SLOT_BASE, SLOT_NUM,
                      SLOT_NAME, SLOT_SECTOR, TRIAL_NONE, UID_ADDR, looks_like_sp, other_meta, other_slot)
 from .meta import free_index, latest, pack_record
 from .simimages import BL_MARK, REGIONS, app_registry
@@ -63,14 +63,123 @@ class Timings:
     stlink_reset_s: float = 0.3
 
 
+def timings_from(overrides: dict) -> Timings:
+    """Timings with stress.toml [sim] overrides (e.g. stlink_read_s = 3.5)."""
+    t = Timings()
+    for k, v in (overrides or {}).items():
+        if not hasattr(t, k):
+            raise bench.BenchError("config_invalid", f"[sim] {k}: no such sim timing.",
+                                   ["Valid keys: " + ", ".join(Timings.__dataclass_fields__)])
+        setattr(t, k, type(getattr(t, k))(v))
+    return t
+
+
+# RCC_CSR reset flags in the order uart_reset_cause() prints them (hw.c)
+CSR_ORDER = ("LPWR", "WWDG", "IWDG", "SFT", "POR", "PIN", "BOR")
+RESET_FLAGS = {
+    "sw": {"SFT", "PIN"},          # SYSRESETREQ (system_reset, fault ISR); it also pulses NRST
+    "iwdg": {"IWDG", "PIN"},
+    "pin": {"PIN"},                # ST-Link / NRST
+    "por": {"POR", "PIN", "BOR"},  # RCC_CSR reset value
+}
+
+
+def csr_text(flags: set) -> str:
+    return ",".join(f for f in CSR_ORDER if f in flags) or "NONE"
+
+
 @dataclass
 class NoInit:
+    """noinit.h. `expiry_*` is the record the TIM2 ISR writes (outside the CRC part)."""
     enter_update: bool = False
     update_in_progress: bool = False
     fault: list = field(default_factory=lambda: [None, None])   # (phase, idx, delay_us)
-    fired_count: int = 0
-    last_fired: tuple | None = None
+    pending_active: bool = False
+    seq: int = 0                                  # pending.seq
+    pending: tuple = ("ERASE", 0, 0)              # (phase, idx, delay_us) of the last start
+    cancelled_count: int = 0
+    cancelled: tuple = ("ERASE", 0, 0)
+    expiry_count: int = 0
+    expiry_seq: int = 0
+    expiry: tuple = ("ERASE", 0, 0)
     trace: bool = False
+
+
+# --- C parsing helpers (hw.c parse_u32/parse_i32/parse_hex32/next_token, b64.c) ---------------
+def _skip1(s: str) -> str:
+    return s[1:] if s.startswith(" ") else s
+
+
+def c_u32(s: str):
+    i = 0
+    while i < len(s) and "0" <= s[i] <= "9":
+        i += 1
+    if i == 0 or (i < len(s) and s[i] != " "):
+        return None
+    v = int(s[:i])
+    if v > 0xFFFFFFFF:
+        return None
+    return v, _skip1(s[i:])
+
+
+def c_i32(s: str):
+    neg = s.startswith("-")
+    r = c_u32(s[1:] if neg else s)
+    if r is None or r[0] > 0x7FFFFFFF:
+        return None
+    return (-r[0] if neg else r[0]), r[1]
+
+
+def c_hex32(s: str):
+    i = 0
+    while i < len(s) and s[i] in "0123456789abcdefABCDEF":
+        if i >= 8:
+            return None
+        i += 1
+    if i == 0 or (i < len(s) and s[i] != " "):
+        return None
+    return int(s[:i], 16), _skip1(s[i:])
+
+
+def c_token(s: str):
+    i = s.find(" ")
+    if i < 0:
+        return s, ""
+    return s[:i], _skip1(s[i:])
+
+
+B64 = {c: i for i, c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")}
+
+
+def c_b64(text: str, out_max: int) -> bytes | None:
+    """b64.c b64_decode: None where the C function returns -1."""
+    n = len(text)
+    if n % 4:
+        return None
+    out = bytearray()
+    for i in range(0, n, 4):
+        v, pad = [], 0
+        for k in range(4):
+            c = text[i + k]
+            if c == "=":
+                if i + 4 != n or k < 2:
+                    return None
+                v.append(0)
+                pad += 1
+            else:
+                if pad or c not in B64:
+                    return None
+                v.append(B64[c])
+        w = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3]
+        cnt = 3 - pad
+        if len(out) + cnt > out_max:
+            return None
+        out += bytes([(w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF][:cnt])
+    return bytes(out)
+
+
+def slot_letter(n: int) -> str:
+    return SLOT_NAME.get(n, "-")
 
 
 class SimBoard:
@@ -96,14 +205,17 @@ class SimBoard:
         self.tim2_entry = None
         self.iwdg_running = False
         self.iwdg_at = None
+        self.nrst_at = None                 # external NRST pulse (a glitch; tests only)
         self.boot_t = 0
         self.app_t = 0
-        self.reset_cause = "POR"
+        self.csr: set = set()               # RCC_CSR reset flags (cleared by the BL)
+        self.reset_csr: set = set()         # noinit.reset_csr: what the BL saw
+        self.snap = (0, None, 0, None)      # fault report snapshot taken at BL entry
         self.design = "?"
         self.resets = 0
         if golden is not None:
             self.mem[:len(golden)] = golden
-        self.reset("POR")
+        self.reset("por")
 
     # --- flash ---------------------------------------------------------------------
     def rd(self, addr: int, n: int) -> bytes:
@@ -185,7 +297,8 @@ class SimBoard:
             self.mem[o:o + len(data)] = data
 
     # --- scheduler -----------------------------------------------------------------------
-    def reset(self, cause: str):
+    def reset(self, kind: str):
+        """kind: sw (SYSRESETREQ), iwdg, pin (ST-Link/NRST), por."""
         r = self.req
         if r is not None and r[0] == "flash":
             end = self.req_t + r[1]
@@ -209,10 +322,12 @@ class SimBoard:
         self.tx_free = self.now
         self.rx.clear()
         self.rx_partial = ""
-        self.tim2_at = self.tim2_entry = None
+        self.tim2_at = None
         self.iwdg_running, self.iwdg_at = False, None
         self.boot_t = self.now
-        self.reset_cause = cause
+        self.csr |= RESET_FLAGS[kind]
+        if kind == "por":
+            self.ni = NoInit()
         self.resets += 1
         self.proc = self._boot()
         self._resume(None)
@@ -291,6 +406,8 @@ class SimBoard:
                 cands.append((self.tim2_at, 0))
             if self.iwdg_at is not None:
                 cands.append((self.iwdg_at, 1))
+            if self.nrst_at is not None:
+                cands.append((self.nrst_at, 4))
             w = self._wake_time()
             if w is not None:
                 cands.append((w, 2))
@@ -308,12 +425,16 @@ class SimBoard:
             self.now = max(self.now, t)
             if kind == 3:
                 return
-            if kind == 0:
-                self.ni.fired_count += 1
-                self.ni.last_fired = self.tim2_entry
-                self.reset("PIN,SFT")
+            if kind == 0:                     # TIM2 ISR: record the expiry, then SYSRESETREQ
+                ni = self.ni
+                ni.expiry_count += 1
+                ni.expiry_seq, ni.expiry = ni.seq, ni.pending
+                self.reset("sw")
             elif kind == 1:
-                self.reset("IWDG")
+                self.reset("iwdg")
+            elif kind == 4:
+                self.nrst_at = None
+                self.reset("pin")
             else:
                 self._wake()
 
@@ -352,16 +473,91 @@ class SimBoard:
         if self.hooks and self.ni.trace:
             self._print(f"T {phase} {idx} {int(us)}")
 
-    def _fault_point(self, phase: str, idx: int):
-        if not self.hooks or self.tim2_at is not None:
+    # --- fault hook (fault.c) --------------------------------------------------------------
+    def _fp(self, phase: str, idx: int):
+        """fault_point(): a matching armed entry is disarmed and starts the timer. delay 0 resets
+        on the spot (the zero-length sleep lets the scheduler take the timer first), delay 1
+        behaves like 2 (TIM2 ARR >= 1)."""
+        ni = self.ni
+        if self.hooks and self.tim2_at is None:
+            for n in (0, 1):
+                e = ni.fault[n]
+                if e and e[0] == phase and (e[1] < 0 or e[1] == idx):
+                    ni.fault[n] = None                     # disarm in noinit first
+                    ni.pending_active = True
+                    ni.seq += 1
+                    ni.pending = (phase, idx, e[2])
+                    self.tim2_at = self.now + (0 if e[2] == 0 else max(2, e[2]))
+                    break
+        yield ("sleep", 0)
+
+    def _cancel_pending(self):
+        ni = self.ni
+        ni.cancelled_count += 1
+        ni.cancelled = ni.pending
+        ni.pending_active = False
+
+    def _boot_snapshot(self):
+        """fault_boot_snapshot(): the last start either expired (fired) or not (cancelled)."""
+        if not self.hooks:
+            self.snap = (0, None, 0, None)
             return
-        for n in (0, 1):
-            e = self.ni.fault[n]
-            if e and e[0] == phase and (e[1] == -1 or e[1] == idx):
-                self.ni.fault[n] = None                     # disarm in noinit first
-                self.tim2_at = self.now + e[2]
-                self.tim2_entry = (n, phase, idx, e[2])
-                return
+        ni = self.ni
+        if ni.pending_active:
+            if ni.expiry_count and ni.expiry_seq == ni.seq:
+                ni.pending_active = False
+            else:
+                self._cancel_pending()
+        self.snap = (ni.expiry_count, ni.expiry, ni.cancelled_count, ni.cancelled)
+
+    def _print_report(self):
+        """fault_print_report(): print, then clear only what was reported."""
+        fc, finfo, cc, cinfo = self.snap
+        if fc:
+            self._print(f"BL fault_fired {fc} {finfo[0]} {finfo[1]} {finfo[2]}")
+        if cc:
+            self._print(f"BL fault_cancelled {cc} {cinfo[0]} {cinfo[1]} {cinfo[2]}")
+        self.ni.expiry_count -= fc
+        self.ni.cancelled_count -= cc
+        self.snap = (0, None, 0, None)
+
+    def _fault_cmd(self, line: str) -> bool:
+        """fault_command(): False when the line is not a FAULT command (or there are no hooks)."""
+        if not self.hooks or not (line == "FAULT" or line.startswith("FAULT ")):
+            return False
+        ni = self.ni
+        p = _skip1(line[5:])
+        if p.startswith("ARM "):
+            r = c_u32(p[4:])
+            if r and r[0] <= 1:
+                n, rest = r
+                ph, rest = c_token(rest)
+                r = c_i32(rest) if ph in PHASES else None
+                if r and r[0] >= -1:
+                    idx, rest = r
+                    r = c_u32(rest)
+                    if r and r[1] in ("", "reset", "RESET"):
+                        ni.fault[n] = (ph, idx, r[0])
+                        self._print(f"OK FAULT ARM {n}")
+                        return True
+        elif p == "CLEAR":
+            if self.tim2_at is not None:
+                self.tim2_at = None
+                if ni.pending_active:
+                    self._cancel_pending()
+            ni.fault = [None, None]
+            self._print("OK FAULT CLEAR")
+            return True
+        elif p == "LIST":
+            for n, e in enumerate(ni.fault):
+                self._print(f"FAULT {n} " + (f"{e[0]} {e[1]} {e[2]}" if e else "-"))
+            return True
+        elif p in ("TRACE ON", "TRACE OFF"):
+            ni.trace = p == "TRACE ON"
+            self._print("OK FAULT TRACE")
+            return True
+        self._print("ERR FAULT")
+        return True
 
     def _iwdg_period(self) -> int:
         return int(self.T.iwdg_s * 1e6 * (1 + self.T.lsi_jitter * (2 * self.rng.random() - 1)))
@@ -378,7 +574,10 @@ class SimBoard:
             return 50
         return self.T.crc_us_per_kb * h.payload_size // 1024
 
-    # --- bootloader ------------------------------------------------------------------------
+    def _naive_bootable(self) -> bool:
+        return looks_like_sp(struct.unpack("<I", self.slot("A")[HEADER_SIZE:HEADER_SIZE + 4])[0])
+
+    # --- bootloader (bl.c) -------------------------------------------------------------------
     def _boot(self):
         yield ("sleep", self.T.reset_us + self.T.bl_init_us)
         bl = self.rd(SECTORS[0][0], 32)
@@ -386,8 +585,10 @@ class SimBoard:
         if design is None:
             yield ("halt",)                                  # blank or unknown BL: silent
         self.design = design
+        self._boot_snapshot()                                # before BOOT: nothing is lost
         t0 = self.now
-        self._fault_point("BOOT", 0)
+        yield from self._fp("BOOT", 0)
+        self.reset_csr, self.csr = set(self.csr), set()      # RMVF
         if design == "ab":
             yield from self._bl_ab(t0)
         else:
@@ -395,100 +596,106 @@ class SimBoard:
         yield ("halt",)
 
     def _status(self, design: str) -> str:
-        a = slot_status_word(self.slot("A"), "A")
         if design == "ab":
-            rec = self._meta()
+            a = slot_status_word(self.slot("A"), "A")
             b = slot_status_word(self.slot("B"), "B")
-            active = rec.active_slot if rec else "-"
-            state = rec.state if rec else "none"
+            rec = self._meta()
+            active = slot_letter(rec.active) if rec else "-"
+            state = ("trial" if rec.trial != TRIAL_NONE else "confirmed") if rec else "none"
             att, seq = (rec.attempts, rec.seq) if rec else (0, 0)
             e0, e1 = rec.erases() if rec else (0, 0)
         else:
-            b, state, att, seq, e0, e1 = "-", "none", 0, 0, 0, 0
-            w0 = struct.unpack("<I", self.slot("A")[HEADER_SIZE:HEADER_SIZE + 4])[0]
-            active = "A" if looks_like_sp(w0) else "-"
-        return (f"BL v0.1 design={design}{' hooks' if self.hooks else ''} slotA={a} slotB={b} "
+            a, b, state, att, seq, e0, e1 = naive_status_word(self.slot("A")), "-", "none", 0, 0, 0, 0
+            active = "A" if self._naive_bootable() else "-"
+        return (f"BL v0.1 design={design}{' hooks' if self.hooks else ''} target=f407 slotA={a} slotB={b} "
                 f"active={active} state={state} attempts={att} seq={seq} erases={e0},{e1} "
-                f"reset={self.reset_cause}")
+                f"reset={csr_text(self.reset_csr)}")
 
-    def _print_fired(self):
-        if self.ni.fired_count and self.ni.last_fired:
-            n, phase, idx, delay = self.ni.last_fired
-            self._print(f"BL fault_fired {self.ni.fired_count} {phase} {idx} {delay}")
-        self.ni.fired_count, self.ni.last_fired = 0, None
+    def _refresh(self):
+        yield ("sleep", self._crc_cost("A") + self._crc_cost("B"))
 
     def _bl_ab(self, t0: int):
-        yield ("sleep", self._crc_cost("A") + self._crc_cost("B"))
+        yield from self._refresh()
         self._print(self._status("ab"))
-        self._print_fired()
-        if self.ni.enter_update or self.ni.update_in_progress:
-            word = "update" if self.ni.enter_update else "resume"
-            self.ni.enter_update = False
-            self._trace("BOOT", 0, self.now - t0)
-            self._print(f"BL {word}")
-            yield from self._update_mode(timeout=True)
-        else:
-            self._trace("BOOT", 0, self.now - t0)
-        yield from self._decide_ab()
-
-    def _decide_ab(self):
-        rec = self._meta()
-        valid = {s: self._valid(s) for s in "AB"}
-        if rec is None:
-            for s in "AB":
-                ok, h = valid[s]
-                if ok:
-                    yield from self._meta_append(1, SLOT_NUM[s], TRIAL_NONE, 0, h.security_counter)
-                    self._print(f"BL jump {s}")
-                    yield from self._jump(s, False)
-            yield from self._nofw()
-        if rec.trial != TRIAL_NONE:
-            t = rec.trial_slot
-            if rec.attempts >= 3 or not valid[t][0]:
-                yield from self._meta_append(5, rec.active, TRIAL_NONE, 0, rec.min_security_counter)
-                self._print(f"BL rollback {t}->{rec.active_slot}")
-                rec = self._meta() or rec
+        self._print_report()
+        self._trace("BOOT", 0, self.now - t0)
+        ni = self.ni
+        while True:                                           # boot_decision()
+            valid = {s: self._valid(s) for s in "AB"}
+            rec = self._meta()
+            # 1. no valid meta record: record whichever slot is valid (A first)
+            if rec is None:
+                pick = next((s for s in "AB" if valid[s][0]), None)
+                if pick is None:
+                    self._print("BL nofw")
+                    yield from self._update_mode(timeout=False)
+                    yield from self._refresh()
+                    continue
+                yield from self._meta_append(1, SLOT_NUM[pick], TRIAL_NONE, 0, valid[pick][1].security_counter)
+                rec = self._meta()
+            # 2. noinit flags
+            if ni.enter_update:
+                ni.enter_update = False
+                self._print("BL update")
+                yield from self._update_mode(timeout=True)
+                yield from self._refresh()
+                continue
+            if ni.update_in_progress:
+                self._print("BL resume")
+                yield from self._update_mode(timeout=True)
+                yield from self._refresh()
+                continue
+            # 3. trial pending
+            if rec.trial != TRIAL_NONE:
+                t = rec.trial
+                if t > 1 or rec.attempts >= 3 or not valid[SLOT_NAME[t]][0]:
+                    yield from self._meta_append(5, rec.active, TRIAL_NONE, rec.attempts, rec.min_security_counter)
+                    self._print(f"BL rollback {slot_letter(t)}->{slot_letter(rec.active)}")
+                    rec = self._meta()
+                else:
+                    yield from self._meta_append(3, rec.active, t, rec.attempts + 1, rec.min_security_counter)
+                    self.iwdg_running = True
+                    self.iwdg_at = self.now + self._iwdg_period()
+                    self._print(f"BL jump {slot_letter(t)} trial")
+                    yield from self._jump(SLOT_NAME[t])
+            # 4. boot active, or repair to the other valid slot
+            a = rec.active
+            if a <= 1 and valid[SLOT_NAME[a]][0]:
+                self._print(f"BL jump {slot_letter(a)}")
+                yield from self._jump(SLOT_NAME[a])
+            if a <= 1:
+                other = 1 - a if valid[SLOT_NAME[1 - a]][0] else -1
             else:
-                yield from self._meta_append(3, rec.active, rec.trial, rec.attempts + 1, rec.min_security_counter)
-                self.iwdg_running = True
-                self.iwdg_at = self.now + self._iwdg_period()
-                self._print(f"BL jump {t} trial")
-                yield from self._jump(t, True)
-        a = rec.active_slot
-        if valid[a][0]:
-            self._print(f"BL jump {a}")
-            yield from self._jump(a, False)
-        o = other_slot(a)
-        if valid[o][0]:
-            yield from self._meta_append(6, SLOT_NUM[o], TRIAL_NONE, 0, rec.min_security_counter)
-            self._print(f"BL repair active={o}")
-            self._print(f"BL jump {o}")
-            yield from self._jump(o, False)
-        yield from self._nofw()
+                other = 0 if valid["A"][0] else (1 if valid["B"][0] else -1)
+            if other >= 0:
+                yield from self._meta_append(6, other, TRIAL_NONE, 0, rec.min_security_counter)
+                self._print(f"BL repair active={slot_letter(other)}")
+                self._print(f"BL jump {slot_letter(other)}")
+                yield from self._jump(SLOT_NAME[other])
+            self._print("BL nofw")
+            yield from self._update_mode(timeout=False)
+            yield from self._refresh()
 
     def _bl_naive(self, t0: int):
         yield ("sleep", 200)
         self._print(self._status("naive"))
-        self._print_fired()
+        self._print_report()
         self._trace("BOOT", 0, self.now - t0)
-        if self.ni.enter_update:
-            self.ni.enter_update = False
-            self._print("BL update")
-            yield from self._update_mode(timeout=True)
-        # Deliberately unsafe: no CRC, no header check, no resume. Word 0 of the payload decides.
-        w0 = struct.unpack("<I", self.slot("A")[HEADER_SIZE:HEADER_SIZE + 4])[0]
-        if looks_like_sp(w0):
-            self._print("BL jump A")
-            yield from self._jump("A", False)
-        yield from self._nofw()
+        while True:
+            if self.ni.enter_update:
+                self.ni.enter_update = False
+                self._print("BL update")
+                yield from self._update_mode(timeout=True)
+                continue
+            # Deliberately unsafe: no CRC, no header check, no resume. Word 0 of the payload decides.
+            if self._naive_bootable():
+                self._print("BL jump A")
+                yield from self._jump("A")
+            self._print("BL nofw")
+            yield from self._update_mode(timeout=False)
 
-    def _nofw(self):
-        self._print("BL nofw")
-        yield from self._update_mode(timeout=False)
-        yield ("halt",)
-
-    def _jump(self, s: str, trial: bool):
-        self._fault_point("JUMP", SLOT_NUM[s])
+    def _jump(self, s: str):
+        yield from self._fp("JUMP", SLOT_NUM[s])
         t = self.now
         yield ("sleep", 20)
         self._trace("JUMP", SLOT_NUM[s], self.now - t)
@@ -496,6 +703,7 @@ class SimBoard:
         yield ("halt",)
 
     def _meta_append(self, kind: int, active: int, trial: int, attempts: int, min_sc: int):
+        """meta.c meta_append()."""
         rec = self._meta()
         cur = rec.sector if rec else 1
         seq = rec.seq + 1 if rec else 1
@@ -503,7 +711,7 @@ class SimBoard:
         idx = free_index(self.sector(cur))
         if idx is None:
             other = other_meta(cur)
-            self._fault_point("ROTATE", other)
+            yield from self._fp("ROTATE", other)
             op = self._erase_op(other)
             yield op
             self._trace("ROTATE", other, op[1])
@@ -511,73 +719,74 @@ class SimBoard:
             cur, idx = other, 0
         r = pack_record(seq, kind, active, trial, attempts, min_sc, e[cur], e[other_meta(cur)])
         addr = SECTORS[cur][0] + idx * 32
-        self._fault_point("META", kind)
+        yield from self._fp("META", kind)
         t = self.now
         yield self._program_op(addr, r[:28])
         yield self._program_op(addr + 28, r[28:])          # CRC word last
         self._trace("META", kind, self.now - t)
 
-    # --- update mode ---------------------------------------------------------------------
+    # --- update mode (bl_update.c) -------------------------------------------------------------
     def _update_mode(self, timeout: bool):
+        ab = self.design == "ab"
+        ni = self.ni
         sess = None
         while True:
             line = yield ("read", int(self.T.update_timeout_s * 1e6) if timeout else None)
             if line is None:
+                sess = None
+                if ab:
+                    ni.update_in_progress = False
                 self._print("BL timeout")
-                self.ni.update_in_progress = self.ni.enter_update = False
                 return
-            line = line.strip()
             if not line:
-                continue
-            if len(line) > MAX_LINE:
+                continue                                      # uart_getline skips empty lines
+            if len(line) > BEGIN_MAX_CHARS or (len(line) > LINE_MAX_CHARS and not line.startswith("UPD BEGIN ")):
                 self._print("ERR LINE")
-            elif line.startswith("FAULT"):
-                self._fault_cmd(line, bl=True)
-            elif line == "UPD ABORT":
-                self.ni.update_in_progress = False
-                self._print("OK ABORT")
-                yield self._flush()
-                yield ("reset", "SFT")
-            elif line.startswith("UPD BEGIN "):
-                sess = yield from self._upd_begin(line[len("UPD BEGIN "):])
             elif line.startswith("UPD DATA "):
-                if sess is None:
-                    self._print("ERR STATE")
-                else:
-                    yield from self._upd_data(sess, line)
+                yield from self._upd_data(sess, line[9:])
+            elif line.startswith("UPD BEGIN "):
+                sess = yield from self._upd_begin(line[10:])
             elif line == "UPD END":
                 if sess is None:
                     self._print("ERR STATE")
                 else:
-                    yield from self._upd_end(sess)
+                    yield from self._upd_end(sess)            # returns only on an error
+                    sess = None
+            elif line == "UPD ABORT":
+                sess = None
+                if ab:
+                    ni.update_in_progress = False
+                self._print("OK ABORT")
+                return                                        # no reset: the boot decision goes on
+            elif line == "PING":
+                self._print("PONG")
+            elif self._fault_cmd(line):
+                pass
             else:
                 self._print("ERR LINE")
 
     def _upd_begin(self, b64: str):
-        try:
-            raw = base64.b64decode(b64, validate=True)
-        except (ValueError, base64.binascii.Error):
-            raw = b""
-        if len(raw) != HEADER_SIZE:
+        raw = None if " " in b64 else c_b64(b64, HEADER_SIZE)
+        if raw is None or len(raw) != HEADER_SIZE:
             self._print("ERR BAD_HDR")
             return None
         h = parse_header(raw)
         ab = self.design == "ab"
-        rec = self._meta() if ab else None
         if ab:
-            target = other_slot(rec.active_slot) if rec else ("B" if self._valid("A")[0] else "A")
+            rec = self._meta()
+            target = "B" if rec is not None and rec.active == 0 else "A"
+            code = header_error(h, target)
+            if code is None and h.security_counter < (rec.min_security_counter if rec else 0):
+                code = "VERSION"
         else:
-            target = "A"
-        code = header_error(h, target)
-        if code is None and ab and rec is not None and h.security_counter < rec.min_security_counter:
-            code = "VERSION"
+            target, code = "A", naive_header_error(h)
         if code:
             self._print(f"ERR {code}")
             return None
         if ab:
             self.ni.update_in_progress = True
         sector = SLOT_SECTOR[target]
-        self._fault_point("ERASE", sector)
+        yield from self._fp("ERASE", sector)
         op = self._erase_op(sector)
         yield op
         self._trace("ERASE", sector, op[1])
@@ -585,27 +794,30 @@ class SimBoard:
         return {"h": h, "raw": raw, "target": target, "written": 0, "chunks": 0,
                 "base": SLOT_BASE[target] + HEADER_SIZE}
 
-    def _upd_data(self, s: dict, line: str):
-        m = re.fullmatch(r"UPD DATA (\d+) (\S+) ([0-9a-fA-F]{8})", line)
-        if not m:
+    def _upd_data(self, s: dict | None, rest: str):
+        """cmd_data(): LINE -> STATE -> CRC -> SEQ -> SIZE -> idempotent retry -> program."""
+        r = c_u32(rest)
+        if r is None:
             self._print("ERR LINE")
             return
-        off = int(m.group(1))
+        off, rest = r
+        b64, rest = c_token(rest)
+        r = c_hex32(rest) if b64 else None
+        if r is None or r[1]:
+            self._print("ERR LINE")
+            return
+        crc = r[0]
+        if s is None:
+            self._print("ERR STATE")
+            return
+        data = c_b64(b64, CHUNK)
+        if not data or zlib.crc32(data) != crc:
+            self._print(f"ERR CRC {off}")
+            return
         if off % 4 or off > s["written"]:
             self._print(f"ERR SEQ {s['written']}")
             return
-        try:
-            data = base64.b64decode(m.group(2), validate=True)
-        except (ValueError, base64.binascii.Error):
-            self._print(f"ERR CRC {off}")
-            return
-        if zlib.crc32(data) != int(m.group(3), 16):
-            self._print(f"ERR CRC {off}")
-            return
-        if not data or len(data) > CHUNK or len(data) % 4:
-            self._print("ERR LINE")
-            return
-        if off + len(data) > s["h"].payload_size:
+        if len(data) % 4 or off + len(data) > s["h"].payload_size:
             self._print("ERR SIZE")
             return
         if off < s["written"]:
@@ -613,7 +825,7 @@ class SimBoard:
             self._print(f"OK {off}" if same else f"ERR SEQ {s['written']}")
             return
         k = s["chunks"]
-        self._fault_point("DATA", k)
+        yield from self._fp("DATA", k)
         op = self._program_op(s["base"] + off, data)
         yield op
         self._trace("DATA", k, op[1])
@@ -624,56 +836,40 @@ class SimBoard:
     def _upd_end(self, s: dict):
         h, target = s["h"], s["target"]
         slot_base = SLOT_BASE[target]
-        if self.design == "ab":
+        ab = self.design == "ab"
+
+        def fail(line: str):
+            if ab:
+                self.ni.update_in_progress = False
+            self._print(line)
+
+        if ab:
             if s["written"] < h.payload_size:
-                self._print("ERR SHORT")
+                fail("ERR SHORT")
                 return
             payload = self.rd(slot_base + HEADER_SIZE, h.payload_size)
             yield ("sleep", self.T.crc_us_per_kb * h.payload_size // 1024)
             if zlib.crc32(payload) != h.payload_crc32:
-                self._print("ERR IMG_CRC")
+                fail("ERR IMG_CRC")
                 return
             yield ("sleep", self.T.sha_us_per_kb * h.payload_size // 1024)
             if hashlib.sha256(payload).digest() != h.payload_sha256:
-                self._print("ERR IMG_SHA")
+                fail("ERR IMG_SHA")
                 return
-        self._fault_point("HDR", 0)
+        yield from self._fp("HDR", 0)
         op = self._program_op(slot_base, s["raw"])
         yield op
         self._trace("HDR", 0, op[1])
-        if self.design == "ab":
+        if ab:
             rec = self._meta()
-            active = rec.active if rec else SLOT_NUM[other_slot(target)]
-            min_sc = rec.min_security_counter if rec else h.security_counter
-            yield from self._meta_append(2, active, SLOT_NUM[target], 0, min_sc)
+            yield from self._meta_append(2, rec.active if rec else TRIAL_NONE, SLOT_NUM[target], 0,
+                                         rec.min_security_counter if rec else 0)
             self.ni.update_in_progress = False
         self._print("OK COMMIT")
         yield self._flush()
-        yield ("reset", "SFT")
+        yield ("reset", "sw")
 
-    def _fault_cmd(self, line: str, bl: bool):
-        unknown = "ERR LINE" if bl else "ERR unknown command"
-        if not self.hooks:
-            self._print(unknown)
-            return
-        p = line.split()
-        if len(p) in (6, 7) and p[1] == "ARM" and p[2] in ("0", "1") and p[3] in PHASES \
-                and re.fullmatch(r"-?\d+", p[4]) and p[5].isdigit() and (len(p) == 6 or p[6] == "reset"):
-            self.ni.fault[int(p[2])] = (p[3], int(p[4]), int(p[5]))
-            self._print(f"OK FAULT ARM {p[2]}")
-        elif p == ["FAULT", "CLEAR"]:
-            self.ni.fault = [None, None]
-            self._print("OK FAULT CLEAR")
-        elif p == ["FAULT", "LIST"]:
-            for n, e in enumerate(self.ni.fault):
-                self._print(f"FAULT {n} " + (f"{e[0]} {e[1]} {e[2]}" if e else "-"))
-        elif len(p) == 3 and p[1] == "TRACE" and p[2] in ("ON", "OFF"):
-            self.ni.trace = p[2] == "ON"
-            self._print("OK FAULT TRACE")
-        else:
-            self._print(unknown)
-
-    # --- applications -----------------------------------------------------------------------
+    # --- applications (app_rt.c, app.c) ------------------------------------------------------
     def _owners(self, s: str) -> dict:
         payload = self.slot(s)[HEADER_SIZE:]
         return {name: self.apps.get((s, name, payload[a:b])) for name, a, b in REGIONS}
@@ -688,7 +884,7 @@ class SimBoard:
             yield from self._lockup()
         self._print("HARDFAULT pc=0x0800A1C4 lr=0x0800A0F7 cfsr=0x00010000 hfsr=0x40000000")
         yield self._flush()
-        yield ("reset", "SFT")
+        yield ("reset", "sw")
 
     def _app(self, s: str):
         yield ("sleep", self.T.app_init_us)
@@ -698,10 +894,10 @@ class SimBoard:
         if own["rt"] is None or own["banner"] is None:
             yield from self._hardfault(own)
         info = own["banner"]
-        rec = self._meta() if self.design == "ab" else None
+        rec = self._meta()
         trial = rec is not None and rec.trial == SLOT_NUM[s]
         self.app_t = self.now
-        self._print(f"BOOT app {info.version} slot={s} trial={int(trial)} reset={self.reset_cause}")
+        self._print(f"BOOT app {info.version} slot={s} trial={int(trial)} reset={csr_text(self.reset_csr)}")
         self.iwdg_at = None                                   # the main loop feeds the IWDG
         main = own["main"]
         if main is None or main.variant == "crash":
@@ -720,13 +916,16 @@ class SimBoard:
                 evs.append(deadline_at)
             line = yield ("read", max(0, min(evs) - self.now) if evs else None)
             if line is not None:
-                yield from self._app_cmd(line.strip(), s, info, own)
+                if len(line) > APP_LINE_MAX:
+                    self._print("ERR line too long")
+                elif line:
+                    yield from self._app_cmd(line.upper(), s, info, own)
                 continue
             if confirm_at is not None and not confirmed and self.now >= confirm_at:
                 if own["confirm"] is None:
                     yield from self._hardfault(own)
-                self._fault_point("CONFIRM", 0)
                 t = self.now
+                yield from self._fp("CONFIRM", 0)
                 rec = self._meta()
                 hdr = parse_header(self.slot(s))
                 sc = max(rec.min_security_counter if rec else 0, hdr.security_counter if hdr else 0)
@@ -740,8 +939,6 @@ class SimBoard:
                     self.iwdg_at = self.now + self._iwdg_period()
 
     def _app_cmd(self, cmd: str, s: str, info, own):
-        if not cmd:
-            return
         if cmd == "PING":
             self._print("PONG")
         elif cmd == "VER":
@@ -750,27 +947,26 @@ class SimBoard:
             self._print(f"TICK {(self.now - self.app_t) // 1000}")
         elif cmd == "UID":
             self._print(f"UID {SIM_UID}")
-        elif cmd == "STATE":
-            rec = self._meta() if self.design == "ab" else None
-            if rec:
-                self._print(f"STATE active={rec.active_slot} trial={int(rec.trial != TRIAL_NONE)} "
-                            f"confirmed={int(rec.trial == TRIAL_NONE)} seq={rec.seq}")
-            else:
-                self._print(f"STATE active={s} trial=0 confirmed=1 seq=0")
         elif cmd == "RESET":
             self._print("OK RESET")
             yield self._flush()
-            yield ("reset", "SFT")
+            yield ("reset", "sw")
         elif cmd == "CRASH":
             self._print("OK CRASH")
             yield from self._hardfault(own)
         elif cmd == "UPD":
-            self._print("OK UPD")
             self.ni.enter_update = True
+            self._print("OK UPD")
             yield self._flush()
-            yield ("reset", "SFT")
-        elif cmd.startswith("FAULT"):
-            self._fault_cmd(cmd, bl=False)
+            yield ("reset", "sw")
+        elif cmd == "STATE":
+            rec = self._meta()
+            trial = rec is not None and rec.trial != TRIAL_NONE
+            confirmed = rec is not None and not trial and rec.active == SLOT_NUM[s]
+            self._print(f"STATE active={slot_letter(rec.active) if rec else '-'} trial={int(trial)} "
+                        f"confirmed={int(confirmed)} seq={rec.seq if rec else 0}")
+        elif self._fault_cmd(cmd):
+            pass
         else:
             self._print("ERR unknown command")
 
@@ -848,13 +1044,13 @@ class SimProgrammer(bench.Programmer):
         self._spend(0.05)
         self.board.load_segments(segs)
         self._spend(self.board.T.stlink_flash_s)
-        self.board.reset("PIN")
+        self.board.reset("pin")
         return f"[sim] {image.name} flashed and verified."
 
     def reset(self) -> str:
         self.calls["reset"] += 1
         self._spend(self.board.T.stlink_reset_s)
-        self.board.reset("PIN")
+        self.board.reset("pin")
         return "[sim] board reset."
 
     def probe_check(self) -> str:

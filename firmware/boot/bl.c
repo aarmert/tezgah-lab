@@ -17,6 +17,7 @@
 #endif
 
 #define MAX_ATTEMPTS 3u
+#define TARGET_WORD " target=f407"   /* SPEC 3, SPEC-C031C6 3 */
 
 static int s_ok[2];       /* slot passes the full check (ab), or "looks bootable" (naive, A only) */
 static uint32_t s_boot_t0;
@@ -93,7 +94,7 @@ static char slot_letter(uint32_t s) { return s == 0 ? 'A' : (s == 1 ? 'B' : '-')
 
 static void print_status(void) {
     const meta_rec_t *r = &g_meta.rec;
-    uart_puts("BL v0.1 design=" BL_DESIGN HOOKS_WORD " slotA="); print_slot(0);
+    uart_puts("BL v0.1 design=" BL_DESIGN HOOKS_WORD TARGET_WORD " slotA="); print_slot(0);
     uart_puts(" slotB="); print_slot(1);
     uart_puts(" active="); uart_putc(g_meta.valid ? slot_letter(r->active) : '-');
     uart_puts(" state=");
@@ -190,7 +191,7 @@ static void refresh(void) { s_ok[0] = naive_bootable(); s_ok[1] = 0; }
 
 static void print_status(void) {
     const img_hdr_t *h = slot_hdr(0);
-    uart_puts("BL v0.1 design=" BL_DESIGN HOOKS_WORD " slotA=");
+    uart_puts("BL v0.1 design=" BL_DESIGN HOOKS_WORD TARGET_WORD " slotA=");
     /* naive trusts the header magic for the status; it never checks the payload CRC */
     if (h->magic == IMG_MAGIC) { uart_puts("ok:"); uart_version(h->fw_version); }
     else uart_puts(slot_is_empty(0) ? "empty" : "bad");
@@ -224,7 +225,7 @@ static void boot_decision(void) {
 int main(void) {
     hw_init();
     noinit_check();
-    fault_snapshot_fired();
+    fault_boot_snapshot();                  /* before BOOT: a BOOT fault must not lose it */
     s_boot_t0 = fault_point(PH_BOOT, 0);   /* BL entry */
 
     uint32_t csr = RCC_CSR;
@@ -235,7 +236,7 @@ int main(void) {
     refresh();
     uart_nl();
     print_status();
-    fault_print_fired();
+    fault_print_report();
     fault_trace(PH_BOOT, 0, s_boot_t0);     /* T BOOT 0 <us from BL entry to the decision> */
     boot_decision();
     for (;;) { }

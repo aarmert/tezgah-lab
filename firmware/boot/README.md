@@ -86,12 +86,16 @@ it finds a branch or a literal that points into flash.
 
 ## The A/B bootloader (`design=ab`)
 
-Boot (SPEC 4.2): status line, `BL fault_fired ...` if a fault fired last time, then the decision:
+Boot (SPEC 4.2): status line (`... design=ab[ hooks] target=f407 ...`), the fault report of hooks
+builds (`BL fault_fired ...` for timers that expired, `BL fault_cancelled ...` for timers that were
+started but never expired), then the decision:
 
 1. No valid meta record: if a slot is valid (A first), append CONFIRMED (min_sc = that image's
    counter). If neither slot is valid → `BL nofw` (update mode with no timeout).
 2. noinit `enter_update` → `BL update`. noinit `update_in_progress` → `BL resume`. Both enter
-   update mode with a 3 s inactivity timeout (`BL timeout`), then continue with step 3.
+   update mode with a 3 s inactivity timeout (`BL timeout`), then continue with step 3. `UPD ABORT`
+   also leaves update mode this way (no reset, no new status line). In update mode every line the BL
+   does not recognise gets `ERR LINE`.
 3. Trial pending: if attempts ≥ 3 or the trial slot is invalid → ROLLBACK record (attempts kept as
    evidence), `BL rollback T->X`. Otherwise ATTEMPT (attempts+1), start the IWDG (~2 s), `BL jump T trial`.
 4. Active valid → `BL jump X`. Otherwise, if the other slot is valid → REPAIR, `BL repair active=Y`,
@@ -148,12 +152,20 @@ unknown → `ERR unknown command`. Commands are not case sensitive (the line is 
 
 ## Fault hook (hooks builds)
 
-`fault_point()` (see SPEC 6.2 for the phases) disarms the matching entry in noinit first, counts it,
-and starts TIM2 (1 MHz one-shot). `delay_us = 0` resets on the spot. While a fault timer is pending,
-other entries stay armed, so entry 1 survives into the next boot. A pending timer keeps running
-across phases and across the jump into the app: the BL jumps with interrupts masked, and the app
-unmasks them once its own RAM ISR and RAM vector table exist. "Fired" means the timer started. If
-something else resets the board first (for example `OK COMMIT`), the fault still counts as fired.
+`fault_point()` (see SPEC 6.2 for the phases) disarms the matching entry in noinit first, records
+the start (`noinit.pending`, new seq) and starts TIM2 (1 MHz one-shot). `delay_us = 0` resets on the
+spot, `delay_us = 1` behaves like 2 (ARR must be ≥ 1). While a fault timer is pending, other entries
+stay armed, so entry 1 survives into the next boot. A pending timer keeps running across phases and
+across the jump into the app: the BL jumps with interrupts masked, and the app unmasks them once its
+own RAM ISR and RAM vector table exist.
+
+"Fired" means the timer **expired**: the RAM ISR writes `noinit.expiry` (after the CRC word, own
+magic + check word, no flash calls) right before SYSRESETREQ. A timer that was started but never
+expired (`OK COMMIT` or another reset came first, or `FAULT CLEAR`) is "cancelled". At entry, before
+the BOOT fault point, the BL resolves the last start (expiry seq == pending seq → fired, else
+cancelled) and snapshots both counts; after the status line it prints `BL fault_fired ...` /
+`BL fault_cancelled ...` and subtracts only what it printed, so a BOOT fault that resets at once
+loses nothing.
 `FAULT ARM ... [reset]`: `reset` is the fault action (the default and the only one).
 
 ## Untested on hardware

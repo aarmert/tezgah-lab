@@ -11,8 +11,10 @@ from dataclasses import dataclass
 VER = r"\d+\.\d+\.\d+"
 
 # --- bootloader -----------------------------------------------------------
+# `target=` (SPEC-C031C6 3) is optional: builds before it print no target, which means f407.
 BL_STATUS_RE = re.compile(
-    rf"BL v0\.1 design=(ab|naive)( hooks)? slotA=(ok:{VER}|bad|empty) slotB=(ok:{VER}|bad|empty|-) "
+    rf"BL v0\.1 design=(ab|naive)( hooks)?(?: target=(f407|c031))? slotA=(ok:{VER}|bad|empty) "
+    rf"slotB=(ok:{VER}|bad|empty|-) "
     r"active=(A|B|-) state=(confirmed|trial|none) attempts=(\d+) seq=(\d+) erases=(\d+),(\d+) reset=(\S+)")
 BL_JUMP_RE = re.compile(r"BL jump (A|B)( trial)?$")
 BL_ROLLBACK_RE = re.compile(r"BL rollback (A|B)->(A|B)$")
@@ -20,6 +22,7 @@ BL_REPAIR_RE = re.compile(r"BL repair active=(A|B)$")
 BL_WAIT_RE = re.compile(r"BL (update|resume|nofw)$")
 BL_TIMEOUT_RE = re.compile(r"BL timeout$")
 BL_FIRED_RE = re.compile(r"BL fault_fired (\d+) ([A-Z]+) (-?\d+) (\d+)$")
+BL_CANCELLED_RE = re.compile(r"BL fault_cancelled (\d+) ([A-Z]+) (-?\d+) (\d+)$")
 
 # --- application ----------------------------------------------------------
 # SPEC: BOOT app (\d+\.\d+\.\d+)(?:-\w+)? ... ; the suffix is captured here (same language).
@@ -54,6 +57,7 @@ class BlStatus:
     erases: tuple[int, int]
     reset: str
     line: str
+    target: str = "f407"
 
 
 @dataclass
@@ -72,7 +76,8 @@ class Banner:
 
 @dataclass
 class Event:
-    kind: str             # status|jump|rollback|repair|wait|timeout|fired|banner|confirmed|hardfault|trace|reply|other
+    kind: str             # status|jump|rollback|repair|wait|timeout|fired|cancelled|banner|confirmed|hardfault|
+    #                       trace|reply|other
     line: str
     t: float = 0.0
     data: object = None
@@ -82,9 +87,9 @@ def parse_status(line: str) -> BlStatus | None:
     m = BL_STATUS_RE.search(line)
     if not m:
         return None
-    return BlStatus(m.group(1), bool(m.group(2)), m.group(3), m.group(4), m.group(5), m.group(6),
-                    int(m.group(7)), int(m.group(8)), (int(m.group(9)), int(m.group(10))), m.group(11),
-                    line[m.start():])
+    return BlStatus(m.group(1), bool(m.group(2)), m.group(4), m.group(5), m.group(6), m.group(7),
+                    int(m.group(8)), int(m.group(9)), (int(m.group(10)), int(m.group(11))), m.group(12),
+                    line[m.start():], m.group(3) or "f407")
 
 
 def parse_banner(line: str) -> Banner | None:
@@ -113,6 +118,8 @@ def parse_line(line: str, t: float = 0.0) -> Event:
         return Event("timeout", line, t)
     if m := BL_FIRED_RE.search(s):
         return Event("fired", line, t, (int(m.group(1)), m.group(2), int(m.group(3)), int(m.group(4))))
+    if m := BL_CANCELLED_RE.search(s):
+        return Event("cancelled", line, t, (int(m.group(1)), m.group(2), int(m.group(3)), int(m.group(4))))
     if APP_CONFIRMED_RE.match(s):
         return Event("confirmed", line, t)
     if m := HARDFAULT_RE.search(s):

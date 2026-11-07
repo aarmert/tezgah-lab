@@ -10,6 +10,18 @@ class Proto(unittest.TestCase):
         self.assertEqual((s.design, s.hooks, s.slotA, s.slotB, s.active, s.state, s.seq, s.erases, s.reset),
                          ("ab", True, "ok:1.0.0", "empty", "A", "confirmed", 12, (3, 1), "PIN,SFT"))
 
+    def test_status_target_optional(self):
+        base = ("BL v0.1 design=ab hooks{} slotA=ok:1.0.0 slotB=empty active=A state=confirmed attempts=0 "
+                "seq=3 erases=0,0 reset=SFT,PIN")
+        self.assertEqual(parse_status(base.format("")).target, "f407")
+        s = parse_status(base.format(" target=f407"))
+        self.assertEqual((s.target, s.hooks, s.seq, s.reset), ("f407", True, 3, "SFT,PIN"))
+        self.assertEqual(parse_status(base.format(" target=c031")).target, "c031")
+        self.assertIsNone(parse_status(base.format(" target=f103")))
+        n = parse_status("BL v0.1 design=naive target=f407 slotA=bad slotB=- active=- state=none attempts=0 "
+                         "seq=0 erases=0,0 reset=POR")
+        self.assertEqual((n.design, n.hooks, n.target), ("naive", False, "f407"))
+
     def test_status_naive_release(self):
         s = parse_status("BL v0.1 design=naive slotA=bad slotB=- active=- state=none attempts=0 seq=0 "
                          "erases=0,0 reset=POR")
@@ -42,6 +54,7 @@ class Proto(unittest.TestCase):
             "BL update": ("wait", "update"), "BL resume": ("wait", "resume"), "BL nofw": ("wait", "nofw"),
             "BL timeout": ("timeout", None), "BL fault_fired 1 DATA 7 120": ("fired", (1, "DATA", 7, 120)),
             "BL fault_fired 2 ERASE -1 0": ("fired", (2, "ERASE", -1, 0)),
+            "BL fault_cancelled 1 JUMP 1 900000": ("cancelled", (1, "JUMP", 1, 900000)),
             "APP confirmed": ("confirmed", None), "T ERASE 3 254000": ("trace", ("ERASE", 3, 254000)),
             "OK ERASED 254000": ("reply", ("OK", "ERASED 254000")), "OK 192": ("reply", ("OK", "192")),
             "ERR SEQ 384": ("reply", ("ERR", "SEQ 384")), "OK COMMIT": ("reply", ("OK", "COMMIT")),

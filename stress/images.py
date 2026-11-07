@@ -81,11 +81,29 @@ def slot_valid(slot_bytes: bytes, slot: str) -> tuple[bool, Header | None]:
 
 
 def slot_status_word(slot_bytes: bytes, slot: str) -> str:
-    """'ok:1.0.0' | 'bad' | 'empty' as printed in the BL status line."""
-    if all(b == 0xFF for b in slot_bytes[:HEADER_SIZE]):
-        return "empty"
+    """'ok:1.0.0' | 'bad' | 'empty' as the A/B BL prints it (bl.c print_slot): ok when the slot is
+    valid, else 'empty' when the whole 16 KB slot is erased (slot_is_empty), else 'bad'."""
     ok, h = slot_valid(slot_bytes, slot)
-    return f"ok:{h.version}" if ok else "bad"
+    if ok:
+        return f"ok:{h.version}"
+    return "empty" if bytes(slot_bytes).count(0xFF) == len(slot_bytes) else "bad"
+
+
+def naive_status_word(slot_bytes: bytes) -> str:
+    """The naive BL's slotA word: it trusts the header magic alone (no CRC check)."""
+    h = parse_header(slot_bytes)
+    if h is not None and h.magic == IMAGE_MAGIC:
+        return f"ok:{h.version}"
+    return "empty" if bytes(slot_bytes).count(0xFF) == len(slot_bytes) else "bad"
+
+
+def naive_header_error(h: Header | None) -> str | None:
+    """The naive BL's BEGIN check (bl_update.c, DESIGN_NAIVE): magic + header CRC, then size."""
+    if h is None or h.magic != IMAGE_MAGIC or not h.crc_ok():
+        return "BAD_HDR"
+    if h.payload_size == 0 or h.payload_size > MAX_PAYLOAD or h.payload_size % 4:
+        return "SIZE"
+    return None
 
 
 @dataclass
