@@ -8,8 +8,12 @@ runtime and fault hook semantics are the F407's. This file only describes what i
 
 Bare-metal C, no HAL. STM32C031C6 (Cortex-M0+, ARMv6-M), HSI48 at 48 MHz, 32 KB flash, 12 KB RAM.
 
-**Not tested on hardware yet.** Everything here was built and checked statically (unit tests,
-disassembly). Section "Unverified" lists what still has to be confirmed on the chip.
+**Hardware status (2026-11-07):** running on a NUCLEO-C031C6. Verified on the chip: boot at 48 MHz,
+both UARTs, all app commands, v1<->v2 updates, `FAULT TRACE` timings (erase 88.1 ms, DATA 2.12 ms,
+HDR 2.83 ms, META 0.36 ms), a fault reset in the middle of a slot erase, overflow-counted delays
+(>65 ms), IWDG rollback after 3 attempts (`reset=IWDG,PIN`), option bytes 0xFFFFFEAA, UID at
+0x1FFF7550, and the naive BL jumping into a half-written slot. Items in "Unverified" below that
+these runs did not touch are still open.
 
 ## Build
 

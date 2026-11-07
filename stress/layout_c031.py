@@ -1,7 +1,7 @@
 """NUCLEO-C031C6 (STM32C031C6T6) layout, SPEC-C031C6 sections 1, 2, 4. Mirrors firmware/boot_c0/layout.h.
 
 16 pages of 2 KB: BL 0-5, META0 6, META1 7, SLOT A 8-11, SLOT B 12-15. Fault-point indices are page
-numbers: a slot erase is four `ERASE <page>` points, a rotation is `ROTATE 6|7`.
+numbers: a slot erase is one `ERASE <first page>` point (8 or 12), a rotation is `ROTATE 6|7`.
 """
 from __future__ import annotations
 
