@@ -8,4 +8,5 @@ docs/raporlar/
 stress_runs/
 stress.toml
 firmware/boot/build/
+firmware/boot_c0/build/
 .venv/
