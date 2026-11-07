@@ -118,7 +118,10 @@ rate is below 1.0% with 95% confidence", not "it never fails".
 `wear.json` counts slot erases per board across runs (one per BEGIN that may have erased, plus one
 per golden flash). META erase counts come from the meta records themselves.
 
-## Time estimates (hardware)
+## Time estimates (F407 hardware, not yet measured)
+
+On the C031 bench a normal trial measured 4.4-6 s (see above); the table below is the F407 estimate.
+
 
 Per update trial ≈ 2 OpenOCD reads (~1 s each) + `UPD` reboot + erase (~0.3 s) + transfer
 (~1 s for 7 KB at 115200 baud) + reboot, 1 s confirm and 1 s settle ≈ **6-9 s**. A BEKLİYOR adds
@@ -185,6 +188,13 @@ python -m stress --json run reset_random --target c031 --link vcp       # no ESP
 C031 sim (seed 1, every point): `reset_sweep` ab 288/288 accepted (167 BEKLİYOR + 121 YENİ),
 naive 98/174 YANLIŞ; with `--reset-source esp` ab 150/150, naive 58/150 YANLIŞ. `naive_control
 --n 60`: 47 YANLIŞ. `reset_random --n 100` and `double_fault --n 100`: all accepted.
+
+C031 hardware (2026-11-07, `stress_runs/*_20261107-12*`, summary in `docs/stress/sunum.html`): basic
+4/4 YENİ; transfer_cut 10/10 ESKİ; line_noise at `--rate 0.2` 10/10 YENİ (48 retries); bad_image 2/2;
+rollback 2/2 ESKİ; reset_random 20/20 with the hook and 20/20 with `--reset-source esp`; reset_sweep
+24/24 (esp, 3 phases) and 57/57 (hook, all 8 phases with `--meta-near-full`); double_fault 10/10;
+naive_control (esp) 11/20 YANLIŞ. No ST-Link recovery, unexpected reset or witness mismatch on A/B.
+A normal trial takes 4.4-6 s; ESP NRST pulses were 5-12 µs late.
 
 ## Tests
 

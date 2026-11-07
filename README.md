@@ -18,6 +18,10 @@ can both use it. It runs the same way on Linux and Windows.
 | `camera/` | The phone camera tool (Bun + TypeScript, scrcpy). Details: [`camera/README.md`](camera/README.md) |
 | `.opencode/plugins/android-camera/` | The `android_take_photo` tool for OpenCode |
 | `docs/raporlar/` | Trial reports |
+| `stress/`, `docs/stress/` | Bootloader stress test: host tool ([`stress/README.md`](stress/README.md)), specs and the results deck (`docs/stress/sunum.html`) |
+| `firmware/boot_c0/`, `firmware/boot/` | Stress-test bootloaders and apps for the NUCLEO-C031C6 and the F407 |
+| `esp32/bridge/` | ESP32-S3 line bridge with a timed NRST for the C031 bench |
+| `docs/egitim/` | Turkish training booklet on the stress-test system (`tezgah-egitim.pdf`) |
 | `setup_ubuntu.sh` | Script that installs everything on Ubuntu |
 | `AGENTS.md` | Rules agents follow in this folder (`CLAUDE.md` imports it) |
 
@@ -224,5 +228,8 @@ and set `plans_dir_only = true` in `bench.toml`.
 
 ## Status
 
-The firmware has run in the QEMU emulator, and the tool has run against a simulated board and over a real
-serial port. Its first run on a real Discovery board will be with you, so check the result of the first `run smoke`.
+- **F407 Discovery bench** (this README): on 2026-10-28 the real board passed `smoke`, `crash_recovery`,
+  `measure` and `camera_blink`, each with its `--verify-can-fail` negative check (`docs/raporlar/`).
+- **Bootloader stress test, NUCLEO-C031C6 + ESP32-S3 bench**: running on the real board since 2026-11-07
+  (`stress/README.md`, results in `docs/stress/sunum.html`). The F407 port of the stress test
+  (`firmware/boot`) has only run in the simulator so far.

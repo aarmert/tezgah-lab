@@ -12,8 +12,8 @@ Bare-metal C, no HAL. STM32C031C6 (Cortex-M0+, ARMv6-M), HSI48 at 48 MHz, 32 KB 
 both UARTs, all app commands, v1<->v2 updates, `FAULT TRACE` timings (erase 88.1 ms, DATA 2.12 ms,
 HDR 2.83 ms, META 0.36 ms), a fault reset in the middle of a slot erase, overflow-counted delays
 (>65 ms), IWDG rollback after 3 attempts (`reset=IWDG,PIN`), option bytes 0xFFFFFEAA, UID at
-0x1FFF7550, and the naive BL jumping into a half-written slot. Items in "Unverified" below that
-these runs did not touch are still open.
+0x1FFF7550, and the naive BL jumping into a half-written slot. The section "What the hardware
+confirmed" below has the details and what is still open.
 
 ## Build
 
@@ -150,29 +150,48 @@ POR/PDR/BOR), and OBLRSTF takes the last place. PWRRSTF or OBLRSTF clears the no
 option byte check of SPEC-C031C6 7 needs no `bench.py mem` (bench.py's read regions are the
 F407's). `UID` reads 0x1FFF7550. LED: LD4 = PA5 (heartbeat).
 
-## Unverified (from memory of RM0490 / the datasheet / UM2953, not checked on a chip)
+## What the hardware confirmed, and what is still open (2026-11-07)
 
-Confirmed by `firmware/wiretest_c031/` on the real board: reset clock 12 MHz, RCC base and
-IOPENR/APBENR1/APBENR2/CSR2 offsets, CSR2 RMVF (23), PINRSTF (26), PWRRSTF (27), GPIOA, USART1/2
-base and register offsets, AF1 on PA2/3/9/10. Everything below is not confirmed:
+Register facts come from memory of RM0490 / the datasheet / UM2953. On the real board:
 
-1. RCC_CR: HSIDIV = bits 13:11, HSIRDY = bit 10. FLASH_ACR: LATENCY = bits 2:0, ICEN = 9, ICRST = 11.
-2. FLASH (0x40022000): KEYR +0x08, SR +0x10, CR +0x14, OPTR +0x20; SR bits EOP 0, OPERR 1, PROGERR 3,
-   WRPERR 4, PGAERR 5, SIZERR 6, PGSERR 7, MISSERR 8, FASTERR 9, RDERR 14, BSY1 16, CFGBSY 18; CR bits
-   PG 0, PER 1, PNB from bit 3, STRT 16, LOCK 31. EOP only with EOPIE.
-3. TIM3 at 0x40000400 (IRQ 16, APBENR1 bit 1) and TIM14 at 0x40002000 (IRQ 19, APBENR2 bit 15);
-   timer clock = PCLK (48 MHz) with APB /1; 32 external IRQs (48 vectors).
-4. CSR2 SFTRSTF 28, IWDGRSTF 29, WWDGRSTF 30, LPWRRSTF 31, OBLRSTF 25; whether a software or IWDG
-   reset also sets PINRSTF (it does on the F4; the host only looks for `IWDG`).
-5. UID at 0x1FFF7550. LD4 on PA5. LSI ~32 kHz (IWDG ~2 s with /32, reload 2000).
-6. The C031 USART has no FIFO in use here (FIFOEN stays 0), so one byte of hardware buffering: a
-   host that pipelines during a flash operation gets an overrun (→ bad line), as specified.
-7. Whether writing TIM3_CNT equal to CCR1 raises CC1IF at once: harmless either way (the ISR ignores
+Confirmed by `firmware/wiretest_c031/`: reset clock 12 MHz, RCC base and IOPENR/APBENR1/APBENR2/CSR2
+offsets, CSR2 RMVF (23), PINRSTF (26), PWRRSTF (27), GPIOA, USART1/2 base and register offsets, AF1 on
+PA2/3/9/10, and the ESP32 GPIO4 → NRST pulse (seen as a pin reset).
+
+Confirmed in practice by the stress runs (`stress_runs/*_20261107-*`, gitignored):
+
+1. RCC_CR HSIDIV and FLASH_ACR LATENCY: both UARTs run at 115200 with BRR 417 (48 MHz) and the code
+   runs from flash at that speed.
+2. FLASH KEYR/SR/CR, page erase (PER, PNB, STRT) and double-word programming (PG, BSY1/CFGBSY): every
+   update is read back and checked (CRC32 + SHA-256 at `UPD END`, SHA-256 over the ST-LINK).
+3. TIM3 (fault timer, IRQ 16) and TIM14 (time base, IRQ 19): measured `T` lines (slot erase 88.1 ms,
+   DATA 2.12 ms, HDR 2.83 ms, META 0.36 ms, ROTATE 22.0 ms, BL entry to decision ~16 ms on ab /
+   ~10.9 ms on naive, CONFIRM ~2.1 ms); faults fire in the middle of a slot erase, and delays above
+   65 535 µs fire too (e.g. `BL fault_fired 1 ERASE 12 531229`), so the overflow counting works.
+4. Reset flags: a software reset reads `SFT,PIN` and an IWDG reset `IWDG,PIN`, so the C0 sets PINRSTF
+   for both, as the F4 does.
+5. UID at 0x1FFF7550 (24 hex digits). IWDG: `v2hang` rolled back after 3 watchdog resets in 6.1 s,
+   consistent with ~2 s per period.
+6. Option bytes: `OPTR` read 0xFFFFFEAA before the runs (RDP byte 0xAA = level 0).
+7. Meta rotation (`erases=` went `0,0` → `0,1` → `1,1`), HARDFAULT line format (`v2crash`), and the
+   two-UART rule (the witness check found no mismatch).
+
+Still open:
+
+1. FLASH error flags (OPERR … RDERR) and the instruction-cache reset bits (ICEN = 9, ICRST = 11) on
+   their own: nothing failed, but no test provokes an error.
+2. LD4 on PA5 (no camera was available) and B1 on PC13 (not used).
+3. LSI frequency (only the ~2 s IWDG period was seen); POR/PWRRSTF and OBLRSTF after a real power
+   cycle or option byte load (never done: every reset was a pin, software or IWDG reset).
+4. The C031 USART has no FIFO in use here (FIFOEN stays 0), so one byte of hardware buffering: a
+   host that pipelines during a flash operation gets an overrun (→ bad line), as specified. The host
+   never pipelines, so this path is not exercised.
+5. Whether writing TIM3_CNT equal to CCR1 raises CC1IF at once: harmless either way (the ISR ignores
    a match while `wraps_left` > 0, and with `wraps_left` = 0 the start is always below 0x8000).
-8. Option bytes assumed at factory defaults (IWDG_SW = 1, NRST_MODE = reset pin, boot from main
-   flash): check with the app's `OPTR` command before the first stress run.
+6. Flash endurance (≥ 10 000 cycles per page per the datasheet). `stress_runs/wear.json` counts the
+   erases: 182 / 243 on slot A / B after 189 trials.
 
-## Suggested first bring-up
+## Bring-up sequence (done on 2026-11-07; kept for a new board)
 
 1. Flash `images/golden_ab_nohooks.hex` (release BL + release v1). On the VCP: `BL v0.1 design=ab
    target=c031 slotA=ok:1.0.0 slotB=empty active=A state=confirmed attempts=0 seq=1 erases=0,0

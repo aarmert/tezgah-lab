@@ -75,8 +75,9 @@ leaves a pending ARM in place.
   input+open-drain mode), and `late_us` = edge − plan is printed with every fire.
 - ARM RX: `Serial1.setRxFIFOFull(1)` moves every received byte to the ring buffer at once, and the
   `\n` is timestamped when `loop()` reads it (tens of µs after its stop bit, not corrected).
-- **(verify on hardware)**: the real offsets above, and the NRST rise time. The Nucleo has a
-  capacitor on NRST and the STM32 pull-up is ~40 kΩ, so after the release NRST takes a few ms to
-  rise. The edge that matters for the test is the falling one.
+- **Measured on hardware (2026-11-07):** `late_us` of the armed NRST pulses was 5-12 µs (most often
+  7-8 µs) over the stress runs; `SELFTEST` reported 0-1 µs timer wake-up lateness. Still not measured:
+  the NRST rise time. The Nucleo has a capacitor on NRST and the STM32 pull-up is ~40 kΩ, so after the
+  release NRST takes a few ms to rise. The edge that matters for the test is the falling one.
 - Timestamps from `TIME ON` use the ESP's `esp_timer` clock (µs since ESP boot). `stress calibrate
   --link esp` turns them into the per-line delay windows for `--reset-source esp`.
