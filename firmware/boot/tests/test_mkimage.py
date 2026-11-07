@@ -194,12 +194,32 @@ class TestGolden(unittest.TestCase):
         self.check("golden_ab.bin", "bl_ab_hooks")
         self.check("golden_ab_nohooks.bin", "bl_ab")
 
+    def test_golden_metafull(self):
+        g, base = img("golden_ab_metafull.bin"), img("golden_ab.bin")
+        self.assertEqual(len(g), 0x20000)
+        self.assertEqual(g[:0x4000], base[:0x4000], "same hooks BL")
+        self.assertEqual(g[0x8000:], base[0x8000:], "same slots and META1 (erased)")
+        n = mk.META_FULL_RECORDS
+        self.assertEqual(n, 511)
+        for i in range(n):
+            rec = g[0x4000 + 32 * i:0x4000 + 32 * i + 32]
+            (magic, seq, kind, active, trial, attempts, min_sc, e_self, e_other, res, crc) = \
+                struct.unpack("<IIBBBBIIIII", rec)
+            self.assertEqual((magic, seq, active, trial, attempts, min_sc, e_self, e_other),
+                             (0x4154454D, i + 1, 0, 0xFF, 0, 1, 0, 0))
+            self.assertEqual(kind, 1 if i == 0 else 4)
+            self.assertEqual(crc, zlib.crc32(rec[:28]) & 0xFFFFFFFF)
+        self.assertEqual(g[0x4000 + 32 * n:0x8000], b"\xff" * 32, "exactly one free record slot")
+        m = json.loads((IMAGES / "manifest.json").read_text())
+        self.assertEqual(m["golden_ab_metafull.bin"]["meta0_records"], 511)
+        self.assertEqual(m["golden_ab.bin"]["meta0_records"], 1)
+
     def test_golden_naive(self):
         self.check("golden_naive.bin", "bl_naive_hooks")
         self.check("golden_naive_nohooks.bin", "bl_naive")
 
     def test_hex_matches_bin(self):
-        for name in ("golden_ab", "golden_naive", "golden_ab_nohooks", "golden_naive_nohooks"):
+        for name in ("golden_ab", "golden_naive", "golden_ab_nohooks", "golden_naive_nohooks", "golden_ab_metafull"):
             mem: dict[int, int] = {}
             upper = 0
             for line in (IMAGES / f"{name}.hex").read_text().split():

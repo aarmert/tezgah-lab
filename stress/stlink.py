@@ -113,19 +113,25 @@ class Probe:
         self.reads += 1
         return FlashState(**data)
 
-    def golden_hex(self, golden_bin: Path) -> Path:
+    def golden_hex(self, golden_bin: Path, skip_bl: bool = False) -> Path:
+        """Intel HEX of a golden .bin. skip_bl: leave out S0 (the BL), so only S1..S4 are erased and
+        written (the per-trial metafull baseline must not wear the BL sector)."""
         data = Path(golden_bin).read_bytes()
         if len(data) > 0x100000:
             raise BenchError("image_invalid", f"{golden_bin.name} is larger than the flash.")
+        base = FLASH_BASE
+        if skip_bl:
+            bl_size = SECTORS[1][0] - FLASH_BASE
+            data, base = data[bl_size:], FLASH_BASE + bl_size
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(data).hexdigest()[:16]
-        out = self.cache_dir / f"{Path(golden_bin).stem}_{digest}.hex"
+        out = self.cache_dir / f"{Path(golden_bin).stem}{'_nobl' if skip_bl else ''}_{digest}.hex"
         if not out.is_file():
-            out.write_text(bin_to_ihex(data, FLASH_BASE), encoding="ascii")
+            out.write_text(bin_to_ihex(data, base), encoding="ascii")
         return out
 
-    def flash_golden(self, golden_bin: Path) -> str:
-        return self.prog.flash(self.golden_hex(golden_bin), under_reset=True)
+    def flash_golden(self, golden_bin: Path, skip_bl: bool = False) -> str:
+        return self.prog.flash(self.golden_hex(golden_bin, skip_bl), under_reset=True)
 
     def reset(self) -> str:
         return self.prog.reset()

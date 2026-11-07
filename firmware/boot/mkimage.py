@@ -65,7 +65,12 @@ OVERSIZE_PAYLOAD = 20000
 WRONG_BOARD_ID = 0xC0C0C0C0
 # Which BL build goes into which golden file
 GOLDEN = {"golden_ab": "bl_ab_hooks", "golden_naive": "bl_naive_hooks",
-          "golden_ab_nohooks": "bl_ab", "golden_naive_nohooks": "bl_naive"}
+          "golden_ab_nohooks": "bl_ab", "golden_naive_nohooks": "bl_naive",
+          "golden_ab_metafull": "bl_ab_hooks"}
+# golden_ab_metafull: META0 (512 records) holds this many, so the first append after the next
+# update's TRIAL record rotates into META1 (SPEC 2 and 8, --meta-near-full).
+META0_RECORDS = 0x4000 // 32
+META_FULL_RECORDS = META0_RECORDS - 1
 
 
 def payload_addr(slot: str) -> int:
@@ -181,9 +186,13 @@ def build_all(build: Path = BUILD) -> dict:
 
     # Golden flash images: BL, META0 with the initial record, v1 in A, B and META1 erased
     v1a = (out / "v1_A.img").read_bytes()
-    rec = meta_record(seq=1, kind=META_KIND["CONFIRMED"], active=0, trial=0xFF, attempts=0,
-                      min_sc=1, erase_self=0, erase_other=0)
+    first = meta_record(seq=1, kind=META_KIND["CONFIRMED"], active=0, trial=0xFF, attempts=0,
+                        min_sc=1, erase_self=0, erase_other=0)
+    full = first + b"".join(meta_record(seq=n, kind=META_KIND["CONFIRM"], active=0, trial=0xFF, attempts=0,
+                                        min_sc=1, erase_self=0, erase_other=0)
+                            for n in range(2, META_FULL_RECORDS + 1))
     for gname, blname in GOLDEN.items():
+        rec = full if gname.endswith("_metafull") else first
         bl = (build / f"{blname}.bin").read_bytes()
         if len(bl) > BL_SIZE:
             raise ValueError(f"{blname}: {len(bl)} > {BL_SIZE}")
@@ -197,7 +206,7 @@ def build_all(build: Path = BUILD) -> dict:
         design = "naive" if "naive" in gname else "ab"
         info = {"design": design, "bl": blname, "bl_sha256": sha(bl), "version": "1.0.0",
                 "slot": "A", "payload_sha256": manifest["v1_A.img"]["payload_sha256"],
-                "base": f"0x{GOLDEN_BASE:08X}"}
+                "base": f"0x{GOLDEN_BASE:08X}", "meta0_records": len(rec) // 32}
         emit(f"{gname}.bin", data, **info)
         emit(f"{gname}.hex", ihex(data, GOLDEN_BASE).encode(), **info)
 

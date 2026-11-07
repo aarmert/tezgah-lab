@@ -74,7 +74,7 @@ class Header(unittest.TestCase):
                                         label_candidates(imgs, "B")), "truncated")
             self.assertEqual(imgs.manifest_problems(), [])
             self.assertEqual(imgs.get("v2crash", "A").version, "2.0.0-crash")
-            self.assertEqual(sorted(imgs.golden), ["ab", "naive"])
+            self.assertEqual(sorted(imgs.golden), ["ab", "ab_metafull", "naive"])
 
 
 class Meta(unittest.TestCase):

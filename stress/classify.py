@@ -35,6 +35,12 @@ class Expect:
     old_version: str          # "1.0.0"
     new_version: str          # "2.0.0-crash"
     versions: dict[str, str] = field(default_factory=dict)   # image base -> banner version
+    new_runs: bool = True     # False for v2crash/v2hang/v2noconfirm: the update ends rolled back (ESKİ)
+
+    @property
+    def resume_goal(self) -> str:
+        """What a finished resume must reach: YENİ, or ESKİ (rolled back) for a failing new image."""
+        return YENI if self.new_runs else ESKI
 
 
 @dataclass
@@ -137,15 +143,16 @@ def classify(events: list[Event], labels: dict[str, str], ex: Expect,
     return Verdict(BELIRSIZ, False, ["the last app banner was followed by a reset and nothing booted again"])
 
 
-def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool) -> Verdict:
+def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool, goal: str = YENI) -> Verdict:
     """The trial ended BEKLİYOR and the host resumed. A YANLIŞ/ÖLÜ during the resume wins
-    (rule 1/2 precede rule 3 over the whole window); otherwise BEKLİYOR, accepted iff YENİ in time."""
+    (rule 1/2 precede rule 3 over the whole window); otherwise BEKLİYOR, accepted iff the goal
+    (YENİ; ESKİ after the rollback of a failing new image) was reached in time."""
     assert first.outcome == BEKLIYOR
     if resumed is not None and resumed.outcome in UNSAFE:
         return Verdict(resumed.outcome, False, first.reasons + ["during resume: " + "; ".join(resumed.reasons)],
                        resumed.running, False)
-    ok = resumed is not None and resumed.outcome == YENI and within_limit
-    why = "resume reached YENİ in time" if ok else (
+    ok = resumed is not None and resumed.outcome == goal and within_limit
+    why = f"resume reached {goal} in time" if ok else (
         "resume timed out" if resumed is None else
         f"resume ended {resumed.outcome}" + ("" if within_limit else " (after resume_limit_s)"))
     reasons = [first.reasons[0].split(";")[0] + "; " + why]

@@ -12,7 +12,8 @@ from .classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verd
 from .config import StressConfig
 from .csvlog import Wear
 from .images import Image, ImageSet
-from .layout import other_slot
+from .layout import SECTORS, other_slot
+from .meta import free_index
 from .link import Link
 from .proto import Event
 from .stlink import FlashState, Probe
@@ -174,8 +175,37 @@ class Baseline:
     notes: list[str]
 
 
-def ensure_baseline(ctx: Ctx) -> Baseline:
+META_NEAR_FULL_FREE = 2        # metafull baseline: at most this many free META0 record slots
+
+
+def flash_metafull(ctx: Ctx) -> None:
+    """--meta-near-full: before every trial, write golden_ab_metafull's S1..S4 (META0 one record short
+    of full, v1 in A, B and META1 erased) under reset. The BL sector is left alone."""
+    g = ctx.images.golden.get("ab_metafull")
+    if g is None:
+        raise BenchError("images_missing", f"golden_ab_metafull.bin not found in {ctx.images.dir}.",
+                         ["Rebuild: python3 firmware/boot/build_boot.py --json"])
+    ctx.link.drain()
+    ctx.link.note("baseline: flash golden_ab_metafull (S1..S4) under reset")
+    ctx.probe.flash_golden(g, skip_bl=True)
+    ctx.wear.golden()
+    wait_banner(ctx.link, BOOT_WAIT_S)
+
+
+def metafull_problem(st: FlashState) -> str | None:
+    rec = st.meta()
+    idx = free_index(st.META0)
+    free = 0 if idx is None else SECTORS[1][1] // 32 - idx
+    if rec is None or rec.sector != 1 or idx is None or free > META_NEAR_FULL_FREE:
+        return f"META0 is not near full (latest in sector {rec.sector if rec else '-'}, {free} free records)"
+    return None
+
+
+def ensure_baseline(ctx: Ctx, scenario: str = "normal") -> Baseline:
     notes, recovered = [], False
+    if scenario == "metafull":
+        flash_metafull(ctx)
+        notes.append("baseline: golden_ab_metafull")
     for attempt in range(2):
         st = ctx.probe.read_state()
         old, why = baseline_state(ctx, st)
@@ -202,6 +232,9 @@ def ensure_baseline(ctx: Ctx) -> Baseline:
             recovered = True
             notes += r.actions
             continue
+        if scenario == "metafull" and (why := metafull_problem(st)):
+            raise BenchError("baseline_failed", f"--meta-near-full precondition not met: {why}.",
+                             ["Rebuild the images (golden_ab_metafull.bin)", "See serial.log"])
         fault_clear(ctx)
         return Baseline(old, st, recovered, notes)
     raise BenchError("baseline_failed", "Could not reach a clean baseline (confirmed v1/v2, app answering VER).",
@@ -273,7 +306,8 @@ def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
             continue
         st = ctx.probe.read_state()
         v = classify(ev, st.labels(ctx.images, [old, new]), ex)
-        if v.outcome == ESKI:           # BL gave up waiting and booted the old app: update it again
+        rolled_back = not ex.new_runs and up.status == "commit"
+        if v.outcome == ESKI and not rolled_back:   # BL gave up waiting and booted the old app: update it again
             in_bl = False
             continue
         return ResumeResult(v, ctx.clock.now() - t0, events, st, transfers, notes, reentered)
@@ -281,6 +315,22 @@ def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
 
 
 # --- trial -----------------------------------------------------------------------------
+def fault2_state(plan: TrialPlan, fired: list[tuple]) -> str:
+    """Did entry 1 fire? A report gives the count and the last fault only: two expiries mean both
+    entries fired; one report matching entry 1 only means entry 1."""
+    def match(entry, d):
+        return entry is not None and d[1] == entry[0] and (entry[1] < 0 or d[2] == entry[1])
+    total = sum(d[0] for d in fired)
+    if total >= 2:
+        return "fired"
+    if total == 1:
+        hit1 = any(match(plan.entry1, d) for d in fired)
+        hit0 = any(match(plan.entry0, d) for d in fired)
+        return "fired" if hit1 and not hit0 else ("ambiguous" if hit1 else "not_fired")
+    return "not_fired"
+
+
+
 def smoke(ctx: Ctx, new: Image) -> tuple[bool, str]:
     ver = re.escape(new.header.version)
     for cmd, rx in (("PING", r"^PONG$"), ("VER", rf"^VER {ver}$"), ("TICK", r"^TICK \d+$"),
@@ -307,14 +357,17 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
     if plan.entry1:
         row["fault2_phase"], row["fault2_index"], row["fault2_delay_us"] = plan.entry1
 
-    base = ensure_baseline(ctx)
+    base = ensure_baseline(ctx, plan.scenario)
+    if plan.scenario != "normal":
+        notes.append(f"scenario={plan.scenario}")
     if base.recovered:
         notes.append("baseline needed golden flash")
     old = base.old
     tgt = other_slot(old.slot) if ctx.design == "ab" else "A"
     new_base = plan.new_base or ("v2" if old.base == "v1" else "v1")
     new = ctx.images.get(new_base, tgt)
-    ex = Expect(ctx.design, old.base, new.base, old.version, new.version, ctx.versions)
+    ex = Expect(ctx.design, old.base, new.base, old.version, new.version, ctx.versions,
+                new_runs=new.base in ("v1", "v2"))
     row.update(from_version=old.version, to_version=new.version, image=new.name)
 
     rng = random.Random(plan.trial_seed)
@@ -408,7 +461,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
         rr = resume_info or do_resume(ctx, old, new, ex)
         all_events += rr.events
         within = rr.seconds <= ctx.resume_limit_s
-        v = combine_resume(v, rr.verdict, within)
+        v = combine_resume(v, rr.verdict, within, ex.resume_goal)
         row["resume_ok"] = v.resume_ok
         row["resume_s"] = round(rr.seconds, 3)
         retries += sum(t.retries for t in rr.transfers)
@@ -469,7 +522,10 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
             ctx.link.command("FAULT TRACE OFF", r"^(OK FAULT TRACE|ERR)", 1.0)
 
     rec_meta = st.meta() if ctx.design == "ab" else None
-    fired = sum(e.data[0] for e in link.events[upd_mark:] if e.kind == "fired")
+    fired_ev = [e.data for e in link.events[upd_mark:] if e.kind == "fired"]
+    fired = sum(d[0] for d in fired_ev)
+    if plan.entry1 is not None:
+        notes.append(f"fault2={fault2_state(plan, fired_ev)}")
     ctx.wear.trial()
     ctx.wear.save()
     row.update(

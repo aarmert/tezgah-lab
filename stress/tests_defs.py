@@ -25,9 +25,12 @@ class TrialPlan:
     new_base: str | None = None                     # None: the other of v1/v2
     expect_err: str | None = None
     trace: bool = False
+    scenario: str = "normal"                        # faults.SCENARIOS
 
     def describe(self) -> dict:
         d = {"trial": self.trial, "trial_seed": self.trial_seed, "fault_type": self.fault_type}
+        if self.scenario != "normal":
+            d["scenario"] = self.scenario
         if self.entry0:
             d["entry0"] = list(self.entry0)
         if self.entry1:
@@ -48,6 +51,7 @@ class Opts:
     step_us: int = 10
     max_points_per_phase: int = 50
     rate: float = 0.05
+    meta_near_full: bool = False      # reset_random/reset_sweep/double_fault: baseline golden_ab_metafull
 
 
 @dataclass
@@ -68,28 +72,47 @@ TESTS = {t.name: t for t in (
     TestDef("line_noise", "3", "corrupt/drop/delay per line at rate p", False, False, 30),
     TestDef("reset_random", "4a", "ERASE -1 + uniform delay over the update window", True, True, 100),
     TestDef("reset_sweep", "4b", "every phase x index x delay", True, True, None),
-    TestDef("double_fault", "5", "entry 0 as 4b + entry 1 at META/ROTATE/BOOT", True, True, 100),
+    TestDef("double_fault", "5", "entry 0 as 4b + entry 1 at a reachable META/ROTATE/BOOT point", True, True, 100),
     TestDef("bad_image", "6", "each bad image", False, False, 100),
     TestDef("rollback", "7", "v2crash / v2hang / v2noconfirm", False, False, 150),
     TestDef("naive_control", "8", "4a + 4b on the naive BL", True, True, 60, design="naive"),
 )}
 
 
+META_FULL_TESTS = ("reset_random", "reset_sweep", "double_fault")
+
+
+def trial_scenario(test: str, i: int, opts: Opts) -> str:
+    """reset_random/reset_sweep: metafull with --meta-near-full, else normal. double_fault:
+    metafull with --meta-near-full, else normal and rollback (v2crash) alternate, so the second
+    fault set covers ROLLBACK as well."""
+    if opts.meta_near_full and test in META_FULL_TESTS:
+        return "metafull"
+    if test == "double_fault":
+        return ("normal", "rollback")[i % 2]
+    return "normal"
+
+
 def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts) -> list[TrialPlan]:
+    from ._bench import BenchError
     td = TESTS.get(test) or TestDef(test, "-", "calibration (TRACE ON)", True, False, 4)
-    points = []
+    if opts.meta_near_full and test not in META_FULL_TESTS:
+        raise BenchError("bad_argument", f"--meta-near-full applies to {', '.join(META_FULL_TESTS)}, not {test}.")
+    points: dict[str, list] = {}
     if test in ("reset_sweep", "double_fault", "naive_control"):
-        points = faults.shuffled(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase), seed, test)
-        if not points:
-            from ._bench import BenchError
-            raise BenchError("calibration_invalid", "The calibration has no fault points.",
-                             ["Re-run calibrate; check that TRACE lines are printed"])
+        for sc in sorted({trial_scenario(test, i, opts) for i in range(2)}):
+            points[sc] = faults.shuffled(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc),
+                                         seed, test)
+            if not points[sc]:
+                raise BenchError("calibration_invalid", f"The calibration has no fault points for '{sc}'.",
+                                 ["Re-run calibrate; check that TRACE lines are printed"])
     if n is None:
-        n = len(points) if test == "reset_sweep" else td.default_n
+        n = len(points[trial_scenario(test, 0, opts)]) if test == "reset_sweep" else td.default_n
     plans = []
     for i in range(n):
         rng = faults.trial_rng(seed, test, i)
-        p = TrialPlan(i, seed, test, faults.trial_seed(seed, test, i))
+        sc = trial_scenario(test, i, opts)
+        p = TrialPlan(i, seed, test, faults.trial_seed(seed, test, i), scenario=sc)
         if test == "basic":
             pass
         elif test == "transfer_cut":
@@ -99,11 +122,13 @@ def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts
         elif test == "reset_random":
             p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal))
         elif test == "reset_sweep":
-            p.fault_type, p.entry0 = "reset_sweep", tuple(points[i % len(points)])
+            p.fault_type, p.entry0 = "reset_sweep", tuple(points[sc][i % len(points[sc])])
         elif test == "double_fault":
             p.fault_type = "double"
-            p.entry0 = tuple(rng.choice(points))
-            p.entry1 = faults.double_second(rng, cal)
+            p.entry0 = tuple(rng.choice(points[sc]))
+            p.entry1 = faults.double_second(rng, cal, sc)
+            if sc == "rollback":
+                p.new_base = "v2crash"
         elif test == "bad_image":
             kind, code = BAD_IMAGES[i % len(BAD_IMAGES)]
             p.fault_type, p.new_base, p.expect_err = "bad_image", kind, code
@@ -111,7 +136,8 @@ def make_plans(test: str, n: int | None, seed: int, cal: dict | None, opts: Opts
             p.fault_type, p.new_base = "rollback", ROLLBACK_VARIANTS[i % len(ROLLBACK_VARIANTS)]
         elif test == "naive_control":
             if i % 2 == 0:
-                p.fault_type, p.entry0 = "reset_sweep", tuple(points[(i // 2) % len(points)])
+                pts = points["normal"]
+                p.fault_type, p.entry0 = "reset_sweep", tuple(pts[(i // 2) % len(pts)])
             else:
                 p.fault_type, p.entry0 = "reset_random", ("ERASE", -1, faults.random_delay(rng, cal))
         elif test == "calibrate":

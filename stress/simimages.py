@@ -91,14 +91,19 @@ def make_bad_image(kind: str, slot: str) -> bytes:
 BAD_KINDS = ("bad_crc", "wrong_board", "truncated", "oversize")
 
 
-def make_golden(design: str) -> bytes:
+META_FULL_RECORDS = SECTORS[1][1] // META_RECORD - 1     # mkimage.py META_FULL_RECORDS (511)
+
+
+def make_golden(design: str, meta_records: int = 1) -> bytes:
+    """design ab / naive; ab with meta_records = META_FULL_RECORDS is golden_ab_metafull."""
     g = bytearray(b"\xff" * GOLDEN_SIZE)
     bl = BL_MARK[design] + prng(f"bl:{design}", 0x3000)
     g[0:len(bl)] = bl
     if design == "ab":
-        rec = pack_record(1, KIND_NUM["CONFIRMED"], 0, TRIAL_NONE, 0, 1, 0, 0)
         o = SECTORS[1][0] - SECTORS[0][0]
-        g[o:o + META_RECORD] = rec
+        for n in range(1, meta_records + 1):
+            kind = KIND_NUM["CONFIRMED"] if n == 1 else KIND_NUM["CONFIRM"]
+            g[o + (n - 1) * META_RECORD:o + n * META_RECORD] = pack_record(n, kind, 0, TRIAL_NONE, 0, 1, 0, 0)
     v1 = make_image("v1", "A")
     o = SECTORS[2][0] - SECTORS[0][0]
     g[o:o + len(v1)] = v1
@@ -117,6 +122,7 @@ def write_image_set(out: Path) -> Path:
             files[f"{kind}_{slot}.img"] = make_bad_image(kind, slot)
     for design in ("ab", "naive"):
         files[f"golden_{design}.bin"] = make_golden(design)
+    files["golden_ab_metafull.bin"] = make_golden("ab", META_FULL_RECORDS)
     manifest = {}
     for name, data in files.items():
         p = out / name

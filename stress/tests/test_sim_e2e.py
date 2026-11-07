@@ -85,6 +85,31 @@ class SimRuns(unittest.TestCase):
             self.assertGreater(sum(int(x["fault_fired"] or 0) for x in rows), 0, test)
             self.assertFalse(any("unexpected_reset" in x["note"] for x in rows), test)
 
+    def test_meta_near_full_rotation_swept(self):
+        _, rows = self.run_ok("reset_sweep", "--n", "60", "--meta-near-full")
+        self.assertTrue(all(x["accepted"] == "1" for x in rows))
+        self.assertTrue(all("scenario=metafull" in x["note"] for x in rows))
+        rot = [x for x in rows if x["phase"] == "ROTATE"]
+        self.assertTrue(rot and all(int(x["fault_fired"]) >= 1 for x in rot), rot)
+        self.assertTrue(any(int(x["meta_erases1"] or 0) >= 1 for x in rows))   # it really rotated
+
+    def test_double_fault_second_faults_reachable(self):
+        for extra, want in ((["--meta-near-full"], ("ROTATE", "-1")), ([], ("META", "5"))):
+            _, rows = self.run_ok("double_fault", "--n", "24", *extra)
+            self.assertTrue(all(x["accepted"] == "1" for x in rows), extra)
+            hit = [x for x in rows if (x["fault2_phase"], x["fault2_index"]) == want]
+            self.assertTrue(hit, (extra, want))
+            self.assertTrue(all("fault2=fired" in x["note"] for x in hit), [x["note"] for x in hit])
+            self.assertFalse(any((x["fault2_phase"], x["fault2_index"]) == ("META", "6") for x in rows))
+        plan = cli("plan", "double_fault", "--n", "4", "--sim")
+        self.assertEqual(set(plan["second_faults"]), {"normal", "rollback"})
+        self.assertIn("META 6", plan["second_faults"]["normal"]["unreachable"])
+        self.assertIn("META 5", plan["second_faults"]["rollback"]["reachable"])
+        self.assertIn("ROTATE -1", cli("plan", "double_fault", "--n", "2", "--sim", "--meta-near-full")
+                      ["second_faults"]["metafull"]["reachable"])
+        bad = cli("run", "basic", "--n", "1", "--sim", "--meta-near-full")
+        self.assertEqual(bad["error_type"], "bad_argument")
+
     def test_bad_image_codes(self):
         _, rows = self.run_ok("bad_image", "--n", "5")
         got = {x["image"].rsplit("_", 1)[0]: x["err_code"] for x in rows}

@@ -20,7 +20,7 @@ from .link import Link, RealClock
 from .report import write_summary
 from .runner import Ctx, run_trial
 from .stlink import Probe
-from .tests_defs import BAD_IMAGES, ROLLBACK_VARIANTS, TESTS, Opts, make_plans
+from .tests_defs import BAD_IMAGES, ROLLBACK_VARIANTS, TESTS, Opts, TrialPlan, make_plans, trial_scenario
 
 REQUIRED_BASES = ("v1", "v2", *ROLLBACK_VARIANTS, *(k for k, _ in BAD_IMAGES))
 
@@ -140,6 +140,8 @@ def reproduce_cmd(args, test: str, n: int, design: str) -> str:
         v = getattr(args, k, None)
         if v is not None:
             c += f" --{k.replace('_', '-')} {v}"
+    if getattr(args, "meta_near_full", False):
+        c += " --meta-near-full"
     return c
 
 
@@ -151,24 +153,41 @@ def resolve_design(test: str, args) -> str:
     return forced or args.design or "ab"
 
 
-def opts_from(args, scfg: StressConfig) -> Opts:
+def opts_from(args, scfg: StressConfig, design: str = "ab") -> Opts:
+    mf = bool(getattr(args, "meta_near_full", False))
+    if mf and design != "ab":
+        raise BenchError("bad_argument", "--meta-near-full needs design=ab (the naive BL has no meta log).")
     return Opts(step_us=args.step_us or 10, max_points_per_phase=args.max_points_per_phase or 50,
-                rate=args.rate if args.rate is not None else float(scfg.get("stress", "line_noise_rate")))
+                rate=args.rate if args.rate is not None else float(scfg.get("stress", "line_noise_rate")),
+                meta_near_full=mf)
+
+
+def second_fault_table(cal: dict, test: str, opts: Opts) -> dict:
+    """Per scenario of this double_fault run: which second faults occur (and are drawn) and which do not."""
+    out = {}
+    for sc in sorted({trial_scenario(test, i, opts) for i in range(2)}):
+        reach, unreach = faults.second_faults(cal, sc)
+        out[sc] = {"reachable": [f"{p} {i}" for p, i in reach], "unreachable": [f"{p} {i}" for p, i in unreach]}
+    return out
 
 
 def cmd_plan(args, scfg: StressConfig) -> dict:
     test = args.test
     design = resolve_design(test, args)
+    opts = opts_from(args, scfg, design)
     cal = ensure_calibration(args, scfg, design) if TESTS[test].needs_cal else None
-    plans = make_plans(test, args.n, args.seed, cal, opts_from(args, scfg))
+    plans = make_plans(test, args.n, args.seed, cal, opts)
     listed = [p.describe() for p in plans]
     if not args.json:
         for d in listed[:args.limit or None]:
             print(json.dumps(d, ensure_ascii=False))
     out = {"test": test, "design": design, "n": len(plans), "seed": args.seed}
     if cal:
-        out["sweep_points"] = len(faults.sweep_points(cal, opts_from(args, scfg).step_us,
-                                                      opts_from(args, scfg).max_points_per_phase))
+        out["scenarios"] = {sc: sum(p.scenario == sc for p in plans) for sc in sorted({p.scenario for p in plans})}
+        out["sweep_points"] = {sc: len(faults.sweep_points(cal, opts.step_us, opts.max_points_per_phase, sc))
+                               for sc in out["scenarios"]}
+        if test == "double_fault":
+            out["second_faults"] = second_fault_table(cal, test, opts)
         out["calibration"] = {k: cal.get(k) for k in ("created", "sim", "manifest_sha256",
                                                       "update_window_us", "data_chunks_common")}
     return bench.ok_result("plan", f"{test}: {len(plans)} trials planned (seed {args.seed}, design {design}).",
@@ -181,9 +200,12 @@ def cmd_run(args, scfg: StressConfig) -> dict:
     design = resolve_design(test, args)
     if args.design is None:
         args.design = design
-    opts = opts_from(args, scfg)
+    opts = opts_from(args, scfg, design)
     cal = ensure_calibration(args, scfg, design) if td.needs_cal else None
     plans = make_plans(test, args.n, args.seed, cal, opts)
+    if opts.meta_near_full and "ab_metafull" not in load_images(scfg, args.sim, design).golden:
+        raise BenchError("images_missing", "golden_ab_metafull.bin is missing.",
+                         ["Rebuild: python3 firmware/boot/build_boot.py --json"])
     if args.dry_run:
         load_images(scfg, args.sim, design)
         return bench.ok_result("run", f"[dry-run] {test}: {len(plans)} trials on design={design}; nothing touched.",
@@ -204,7 +226,10 @@ def cmd_run(args, scfg: StressConfig) -> dict:
         "stlink_serial_hash": scfg.hash_id(b.probe_serial), "salt_set": bool(scfg.salt),
         "observe_s": b.ctx.observe_s, "resume_limit_s": b.ctx.resume_limit_s,
         "calibration": cal, "reproduce": reproduce_cmd(args, test, len(plans), design),
+        "scenarios": {sc: sum(p.scenario == sc for p in plans) for sc in sorted({p.scenario for p in plans})},
     }
+    if cal and test == "double_fault":
+        run_info["second_faults"] = second_fault_table(cal, test, opts)
     (run_dir / "run.json").write_text(json.dumps(run_info, indent=2, ensure_ascii=False), encoding="utf-8")
     csvlog = CsvLog(run_dir / "trials.csv")
     try:
@@ -256,18 +281,31 @@ def _pyserial_version() -> str | None:
 def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = False) -> dict:
     run_dir = new_run_dir(scfg, f"calibrate_{design}" + ("_sim" if args.sim else ""))
     b = open_bench(args, scfg, design, "calibrate", run_dir / "serial.log", 0)
-    traces, windows, update_s = [], [], []
+    traces, windows, update_s, scen = [], [], [], []
+    plans = make_plans("calibrate", runs, 0, None, Opts())
+    if design == "ab":
+        # One update per extra scenario, so the calibration knows which fault points occur there
+        # (metafull: ROTATE + the META appends after it; rollback: ATTEMPT x3 + ROLLBACK).
+        plans.append(TrialPlan(runs, 0, "calibrate", faults.trial_seed(0, "calibrate", runs),
+                               fault_type="calibrate", trace=True, scenario="metafull"))
+        plans.append(TrialPlan(runs + 1, 0, "calibrate", faults.trial_seed(0, "calibrate", runs + 1),
+                               fault_type="calibrate", trace=True, scenario="rollback", new_base="v2crash"))
     try:
-        for p in make_plans("calibrate", runs, 0, None, Opts()):
+        for p in plans:
             row, ex = run_trial(b.ctx, p)
-            if row["outcome"] != "YENİ":
-                raise BenchError("calibration_failed", f"Calibration update {p.trial} ended {row['outcome']}.",
+            want = "ESKİ" if p.scenario == "rollback" else "YENİ"
+            if row["outcome"] != want:
+                raise BenchError("calibration_failed",
+                                 f"Calibration update {p.trial} ({p.scenario}) ended {row['outcome']}, not {want}.",
                                  [f"See {run_dir / 'serial.log'}"])
             tr = [e.data for e in ex["events"] if e.kind == "trace"]
             if not tr:
                 raise BenchError("hooks_missing", "No 'T <PHASE> <idx> <us>' lines with FAULT TRACE ON.",
                                  ["Flash the hooks build of the BL and apps"])
             traces.append(tr)
+            scen.append(p.scenario)
+            if p.scenario != "normal":
+                continue
             up = ex["transfer"]
             begin_tx_s = (len("UPD BEGIN ") + 684 + 2) * 10 / 115200
             windows.append(int((up.t_commit - up.t_begin - begin_tx_s) * 1e6))
@@ -277,7 +315,7 @@ def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = Fa
         b.ctx.link.flush_log()
         b.stack.close()
     cal = faults.build_calibration(traces, windows, update_s, design, bool(args.sim),
-                                   b.ctx.images.manifest_digest())
+                                   b.ctx.images.manifest_digest(), scen)
     path = faults.save_calibration(scfg.runs_dir, bool(args.sim), design, cal)
     return {"path": str(path), "calibration": cal, "report_dir": str(run_dir)}
 
@@ -326,6 +364,8 @@ def cmd_doctor(args, scfg: StressConfig) -> dict:
     add("image headers", not bad_hdr, "ok" if not bad_hdr else "; ".join(bad_hdr))
     for design in ("ab", "naive"):
         add(f"golden_{design}", design in images.golden, str(images.golden.get(design, "missing")))
+    add("golden_ab_metafull", "ab_metafull" in images.golden,
+        str(images.golden.get("ab_metafull", "missing (needed for --meta-near-full)")), required=False)
     probs = images.manifest_problems()
     add("manifest.json", bool(images.manifest) and not probs,
         "hashes match" if images.manifest and not probs else ("missing" if not images.manifest else "; ".join(probs)))
@@ -390,9 +430,15 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--max-points-per-phase", type=int)
             s.add_argument("--rate", type=float, help="line_noise per-line fault probability")
 
+    def meta_full(s):
+        s.add_argument("--meta-near-full", action="store_true",
+                       help="reset_random/reset_sweep/double_fault: baseline golden_ab_metafull before every "
+                            "trial (META0 one record short of full: the post-commit append rotates)")
+
     s = sub.add_parser("run", help="Run a test")
     s.add_argument("test", choices=sorted(TESTS))
     common(s)
+    meta_full(s)
     s.add_argument("--baseline", choices=("any", "strict"), default="any")
     s.add_argument("--observe-s", type=float)
     s.add_argument("--resume-limit-s", type=float)
@@ -401,6 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("plan", help="Print the deterministic fault list without running")
     s.add_argument("test", choices=sorted(TESTS))
     common(s)
+    meta_full(s)
     s.add_argument("--limit", type=int, default=0, help="Print at most this many trials")
 
     s = sub.add_parser("calibrate", help="TRACE ON updates; writes stress_runs/calibration.json")

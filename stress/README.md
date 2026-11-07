@@ -35,11 +35,18 @@ Add `--sim` to any of them to run against the simulator instead of the board (se
 | `transfer_cut` | 2 | host stops at a random byte of the transfer | ESKİ, active slot hash unchanged |
 | `line_noise` | 3 | corrupt/drop/delay(0-900 ms) per line with probability `--rate` | YENİ |
 | `reset_random` | 4a | `FAULT ARM 0 ERASE -1 <uniform over the update window>` | accepted only |
-| `reset_sweep` | 4b | every phase × index × delay (calibrated) | accepted only |
-| `double_fault` | 5 | entry 0 as 4b, entry 1 at META ROLLBACK/ATTEMPT/REPAIR, ROTATE or BOOT | accepted only |
+| `reset_sweep` | 4b | every phase × index × delay that occurs in the scenario (calibrated) | accepted only |
+| `double_fault` | 5 | entry 0 as 4b, entry 1 at the reachable ones of META ROLLBACK/ATTEMPT/REPAIR, ROTATE, BOOT | accepted only |
 | `bad_image` | 6 | bad_crc, wrong_board, truncated, oversize, old | the right `ERR`, ESKİ, hash unchanged |
 | `rollback` | 7 | v2crash / v2hang / v2noconfirm | ESKİ after ≤ 3 trial attempts |
 | `naive_control` | 8 | 4a + 4b on the naive BL | **must** show ÖLÜ/YANLIŞ |
+
+`--meta-near-full` (reset_random, reset_sweep, double_fault; design ab) flashes S1..S4 of
+`golden_ab_metafull` before every trial: META0 is one record short of full, so the update's records
+rotate into META1 and ROTATE plus the META points after it are swept. Without it, `double_fault`
+alternates the normal v1↔v2 update with an update to `v2crash` (rollback scenario), so META ROLLBACK
+is reachable. `plan` shows per scenario which second faults are reachable (`second_faults`); REPAIR
+never is. Trial notes carry `scenario=` and `fault2=fired|not_fired`.
 
 `reset_*`, `double_fault`, `naive_control` and `calibrate` need the `hooks` builds (the BL status
 line shows `hooks`). Run `calibrate` once per design, and again whenever the firmware changes

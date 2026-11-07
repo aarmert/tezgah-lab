@@ -15,6 +15,7 @@ from .layout import (BOARD_ID, HEADER_CRC_OFF, HEADER_SIZE, HEADER_VERSION, IMAG
 HDR_FMT = "<IHHIIIIII32s"          # 64 bytes
 NAME_RE = re.compile(r"^(?P<base>[a-z0-9_]+?)_(?P<slot>[AB])\.img$")
 APP_VARIANTS = ("crash", "hang", "noconfirm")
+GOLDEN_KEYS = ("ab", "naive", "ab_metafull")   # golden_<key>.bin
 
 
 @dataclass
@@ -156,7 +157,7 @@ class ImageSet:
                 continue
             data = p.read_bytes()
             s.images[p.name] = Image(p.name, m["base"], m["slot"], data, parse_header(data), p)
-        for design in ("ab", "naive"):
+        for design in GOLDEN_KEYS:
             g = s.dir / f"golden_{design}.bin"
             if g.is_file():
                 s.golden[design] = g
