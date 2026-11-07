@@ -77,7 +77,9 @@ def build_calibration(traces: list[list[tuple[str, int, int]]], windows_us: list
     seen: dict[str, set] = {}
     for sc, tr in zip(scenarios, traces):
         chunks.setdefault(sc, []).append(1 + max((i for p, i, _ in tr if p == "DATA"), default=-1))
-        seen.setdefault(sc, set()).update((p, i) for p, i, _ in tr)
+        # A rotation during a normal calibration run (a nearly full log) is a fluke, not a point
+        # normal trials reach: ROTATE belongs to the metafull scenario only.
+        seen.setdefault(sc, set()).update((p, i) for p, i, _ in tr if not (sc == "normal" and p == "ROTATE"))
         for p, i, us in tr:
             d = phases.setdefault(p, {})
             d[str(i)] = max(us, d.get(str(i), 0))

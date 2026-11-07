@@ -133,6 +133,10 @@ class Sweep(unittest.TestCase):
         c2 = faults.build_calibration(tr + [[("ROTATE", 4, 560_000)]], [5, 7], [1.0], "ab", True, None,
                                       ["normal", "normal", "metafull"])
         self.assertEqual(c2["seen"]["metafull"], [["ROTATE", 4]])
+        c3 = faults.build_calibration([[("ROTATE", 4, 9), ("BOOT", 0, 5)]], [1], [1.0], "ab", True, None)
+        self.assertEqual(c3["seen"]["normal"], [["BOOT", 0]])            # a fluke rotation is not "normal"
+        naive = make_plans("double_fault", 4, 1, CAL, Opts(design="naive"))
+        self.assertEqual({p.scenario for p in naive}, {"normal"})
         self.assertEqual(c2["data_chunks"], {"normal": 32, "metafull": 0})
         self.assertEqual(c["phases"]["DATA"]["0"], 800)
         self.assertEqual(c["phases"]["DATA"]["34"], 734)

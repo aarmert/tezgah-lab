@@ -61,6 +61,18 @@ class ResumeAfterBlTimeout(unittest.TestCase):
         self.assertFalse(any("line too long" in e.line for e in link.events))
 
 
+class StaleReply(unittest.TestCase):
+    def test_begin_skips_a_stale_err_state(self):
+        """A DATA line that reaches the BL right after a reset gets ERR STATE; BEGIN must not take it."""
+        ctx, board = make_ctx("reset_random")
+        link = ctx.link
+        self.assertTrue(enter_update(link).ok)
+        link.send_line("UPD DATA 0 AAAA 00000000")       # no session yet -> ERR STATE, arrives late
+        up = Updater(link).transfer(ctx.images.get("v2", "B"))
+        self.assertEqual(up.status, "commit", up.notes)
+        self.assertTrue(any(e.line == "ERR STATE" for e in link.events))
+
+
 class Glitch(SimBoard):
     """An external NRST pulse 0.3 s after the new app confirms (no known cause)."""
     glitched = False

@@ -23,6 +23,10 @@ LEFT_UPDATE = ("status", "timeout", "jump", "banner", "wait")
 # waiting for UPD commands (e.g. 'BL timeout' -> 'BL jump A' -> 'BOOT app').
 LEFT_BEFORE_START = ("status", "timeout", "jump", "banner", "hardfault", "rollback", "repair")
 NOISE_RETRYABLE_BEGIN = {"BAD_HDR", "BOARD", "SIZE", "LINK", "LINE"}
+# Every ERR code BEGIN can answer (bl_update.c cmd_begin + ERR LINE). Any other reply, e.g. the
+# ERR STATE for a DATA line that reached the BL right after a reset, is stale and is skipped.
+BEGIN_ERRS = {"BAD_HDR", "BOARD", "SIZE", "LINK", "VERSION", "FLASH", "LINE"}
+END_ERRS = {"SHORT", "IMG_CRC", "IMG_SHA", "FLASH", "STATE", "LINE"}
 
 
 class Injector:
@@ -152,7 +156,8 @@ class Updater:
             if how == "cut":
                 r.status = "cut"
                 return r
-            kind, e = self._await(lambda ev: OK_ERASED_RE.match(ev.line) or ev.data[0] == "ERR", BEGIN_TIMEOUT_S)
+            kind, e = self._await(lambda ev: OK_ERASED_RE.match(ev.line)
+                                  or (ev.data[0] == "ERR" and err_code(ev.data[1]) in BEGIN_ERRS), BEGIN_TIMEOUT_S)
             if kind == "reset":
                 r.erases += 1
                 return reset(e)
@@ -228,7 +233,8 @@ class Updater:
         tries = 0
         while True:
             how = self.inj.send(self.link, "UPD END")
-            kind, e = self._await(lambda ev: ev.line.strip() == "OK COMMIT" or ev.data[0] == "ERR", END_TIMEOUT_S)
+            kind, e = self._await(lambda ev: ev.line.strip() == "OK COMMIT"
+                                  or (ev.data[0] == "ERR" and err_code(ev.data[1]) in END_ERRS), END_TIMEOUT_S)
             if kind == "reset":
                 return reset(e)
             if kind == "reply" and e.data[0] == "OK":

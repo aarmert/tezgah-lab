@@ -52,6 +52,7 @@ class Opts:
     max_points_per_phase: int = 50
     rate: float = 0.05
     meta_near_full: bool = False      # reset_random/reset_sweep/double_fault: baseline golden_ab_metafull
+    design: str = "ab"
 
 
 @dataclass
@@ -88,7 +89,7 @@ def trial_scenario(test: str, i: int, opts: Opts) -> str:
     fault set covers ROLLBACK as well."""
     if opts.meta_near_full and test in META_FULL_TESTS:
         return "metafull"
-    if test == "double_fault":
+    if test == "double_fault" and opts.design == "ab":
         return ("normal", "rollback")[i % 2]
     return "normal"
 

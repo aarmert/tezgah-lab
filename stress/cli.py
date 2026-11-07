@@ -159,7 +159,7 @@ def opts_from(args, scfg: StressConfig, design: str = "ab") -> Opts:
         raise BenchError("bad_argument", "--meta-near-full needs design=ab (the naive BL has no meta log).")
     return Opts(step_us=args.step_us or 10, max_points_per_phase=args.max_points_per_phase or 50,
                 rate=args.rate if args.rate is not None else float(scfg.get("stress", "line_noise_rate")),
-                meta_near_full=mf)
+                meta_near_full=mf, design=design)
 
 
 def second_fault_table(cal: dict, test: str, opts: Opts) -> dict:
