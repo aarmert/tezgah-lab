@@ -193,8 +193,13 @@ C031 hardware (2026-11-07, `stress_runs/*_20261107-12*`, summary in `docs/stress
 4/4 YENİ; transfer_cut 10/10 ESKİ; line_noise at `--rate 0.2` 10/10 YENİ (48 retries); bad_image 2/2;
 rollback 2/2 ESKİ; reset_random 20/20 with the hook and 20/20 with `--reset-source esp`; reset_sweep
 24/24 (esp, 3 phases) and 57/57 (hook, all 8 phases with `--meta-near-full`); double_fault 10/10;
-naive_control (esp) 11/20 YANLIŞ. No ST-Link recovery, unexpected reset or witness mismatch on A/B.
-A normal trial takes 4.4-6 s; ESP NRST pulses were 5-12 µs late.
+naive_control (esp) 11/20 YANLIŞ. Then two 2-hour sweeps (stopped with Ctrl-C after 2 h):
+`reset_sweep --seed 2026 --max-points-per-phase 800` (hook, 8 phases) 1493/1493 and the same with
+`--seed 2027 --reset-source esp` (3 phases) 1479/1479. In total 0 failures in 3103 reset-injected A/B
+trials: failure rate < 0.096% with 95% confidence. No ST-Link recovery and no unexpected reset on A/B;
+9 `witness_mismatch` notes, all BOOT faults that cut the status line mid-character (the two UARTs keep
+a different broken last byte; harmless). A normal trial takes 4.4-6 s; ESP NRST pulses were 2-15 µs
+late (median 7 µs).
 
 ## Tests
 
