@@ -1,4 +1,4 @@
-"""Simulated STM32F407 bench: both bootloader designs, the apps, F407 flash and the fault hook.
+"""Simulated bench (STM32F407 or STM32C031): both bootloader designs, the apps, flash and the fault hook.
 
 Discrete-event model in simulated microseconds. Device firmware is written as generators that
 yield requests to the scheduler:
@@ -11,6 +11,12 @@ yield requests to the scheduler:
 Flash semantics: erased = 0xFF, programming only clears bits (new = old & data), a reset during an
 erase leaves a random mix of erased and old bits, a reset during programming leaves the words
 before the cut programmed and the word under the cut partially programmed.
+The target's Layout (stress/layout.py, layout_c031.py) sets the flash map, header size, alignment
+and line limits. C031 differences: 2 KB pages (a slot erase is four `ERASE <page>` points), 64-bit
+double-word programming that is refused (PROGERR -> ERR FLASH) unless the double-word is erased,
+the meta record's CRC double-word programmed last, and a status line with target=c031.
+Every line goes to every UART (SPEC-ESP32 1): `taps` are extra UARTs (the C031's second one) that
+receive a copy of each printed line, cut the same way on a reset.
 
 The sim plugs into the host as a transport (SimSerial), a clock (SimClock) and a bench Programmer
 (SimProgrammer) that understands `dump_image` and `mdw`, so `--sim` runs the identical host code.
@@ -30,8 +36,7 @@ from pathlib import Path
 
 from ._bench import bench
 from .images import header_error, naive_header_error, naive_status_word, parse_header, slot_status_word, slot_valid
-from .layout import (APP_LINE_MAX, BEGIN_MAX_CHARS, CHUNK, GOLDEN_SIZE, HEADER_SIZE, LINE_MAX_CHARS, PHASES, SECTORS, SLOT_BASE, SLOT_NUM,
-                     SLOT_NAME, SLOT_SECTOR, TRIAL_NONE, UID_ADDR, looks_like_sp, other_meta, other_slot)
+from .layout import F407, PHASES, SLOT_NAME, SLOT_NUM, TRIAL_NONE, Layout, other_slot
 from .meta import free_index, latest, pack_record
 from .simimages import BL_MARK, REGIONS, app_registry
 from .stlink import ihex_to_segments
@@ -61,11 +66,28 @@ class Timings:
     stlink_read_s: float = 0.8
     stlink_flash_s: float = 4.0
     stlink_reset_s: float = 0.3
+    erase_page_us: int = 22_000    # C031 2 KB page: ~22 ms (max ~40 ms)
+    dword_us: int = 85             # C031 double-word program
+    esp_us: int = 40               # ESP32 bridge: line handling between its two UARTs
+    esp_late_us: int = 12          # ESP32 bridge: max lateness of an armed NRST edge
+
+    def erase_us(self, layout: Layout, size: int) -> int:
+        if layout.target == "c031":
+            return self.erase_page_us
+        return self.erase16_us if size == 0x4000 else self.erase64_us
+
+    def program_us(self, layout: Layout) -> int:
+        """Time of one program operation (F407 word, C031 double-word)."""
+        return self.dword_us if layout.program_unit == 8 else self.word_us
 
 
-def timings_from(overrides: dict) -> Timings:
+# Per-target defaults that differ from the F407's (M0+ at 48 MHz, no hardware CRC/SHA)
+TARGET_TIMINGS = {"c031": {"crc_us_per_kb": 250, "sha_us_per_kb": 2500, "bl_init_us": 800}}
+
+
+def timings_from(overrides: dict, target: str = "f407") -> Timings:
     """Timings with stress.toml [sim] overrides (e.g. stlink_read_s = 3.5)."""
-    t = Timings()
+    t = Timings(**TARGET_TIMINGS.get(target, {}))
     for k, v in (overrides or {}).items():
         if not hasattr(t, k):
             raise bench.BenchError("config_invalid", f"[sim] {k}: no such sim timing.",
@@ -184,18 +206,20 @@ def slot_letter(n: int) -> str:
 
 class SimBoard:
     def __init__(self, seed: int = 0, hooks: bool = True, timings: Timings | None = None,
-                 golden: bytes | None = None):
-        self.T = timings or Timings()
+                 golden: bytes | None = None, layout: Layout = F407):
+        self.L = layout
+        self.T = timings or timings_from({}, layout.target)
         self.rng = random.Random(f"sim:{seed}")
         self.hooks = hooks
-        self.mem = bytearray(b"\xff" * GOLDEN_SIZE)
+        self.mem = bytearray(b"\xff" * layout.golden_size)
         self.now = 0
-        self.apps = app_registry()
+        self.apps = app_registry(layout)
         self.ni = NoInit()
         self.rx: deque = deque()            # [start, end, text, complete]
         self.rx_free = 0
         self.rx_partial = ""
         self.tx: list = []                  # [t_start, t_end, text]
+        self.taps: list[list] = []          # other UARTs: each gets a copy of every printed line
         self.tx_free = 0
         self.busy: list[tuple[int, int]] = []
         self.proc = None
@@ -205,7 +229,10 @@ class SimBoard:
         self.tim2_entry = None
         self.iwdg_running = False
         self.iwdg_at = None
-        self.nrst_at = None                 # external NRST pulse (a glitch; tests only)
+        self.nrst_at = None                 # external NRST pulse (ESP32 bridge, or a glitch in tests)
+        self.nrst_hold_us = 0               # how long that pulse holds the core in reset
+        self.on_nrst = None                 # callback(t_us) when the external pulse fires
+        self.hold_us = 0                    # reset hold of the current boot
         self.boot_t = 0
         self.app_t = 0
         self.csr: set = set()               # RCC_CSR reset flags (cleared by the BL)
@@ -213,28 +240,29 @@ class SimBoard:
         self.snap = (0, None, 0, None)      # fault report snapshot taken at BL entry
         self.design = "?"
         self.resets = 0
+        self.err_lines = 0                  # ERR LINE replies printed (C031 inactivity timer)
         if golden is not None:
             self.mem[:len(golden)] = golden
         self.reset("por")
 
     # --- flash ---------------------------------------------------------------------
     def rd(self, addr: int, n: int) -> bytes:
-        o = addr - SECTORS[0][0]
+        o = addr - self.L.flash_base
         if 0 <= o and o + n <= len(self.mem):
             return bytes(self.mem[o:o + n])
         return b"\xff" * n
 
     def sector(self, s: int) -> bytes:
-        base, size = SECTORS[s]
+        base, size = self.L.units[s]
         return self.rd(base, size)
 
     def slot(self, s: str) -> bytes:
-        return self.sector(SLOT_SECTOR[s])
+        return self.rd(self.L.slot_base[s], self.L.slot_size)
 
     def _erase_op(self, s: int):
-        base, size = SECTORS[s]
-        o = base - SECTORS[0][0]
-        nominal = self.T.erase16_us if size == 0x4000 else self.T.erase64_us
+        base, size = self.L.units[s]
+        o = base - self.L.flash_base
+        nominal = self.T.erase_us(self.L, size)
         dur = int(nominal * (1 + self.T.erase_jitter * (2 * self.rng.random() - 1)))
 
         def done():
@@ -258,12 +286,13 @@ class SimBoard:
         return ("flash", dur, done, partial)
 
     def _program_op(self, addr: int, data: bytes):
-        o = addr - SECTORS[0][0]
-        n = len(data) // 4
-        dur = max(1, n * self.T.word_us)
+        o = addr - self.L.flash_base
+        u = self.L.program_unit
+        n = len(data) // u
+        dur = max(1, n * self.T.program_us(self.L))
 
         def write(k: int):
-            for i in range(k * 4):
+            for i in range(k * u):
                 self.mem[o + i] &= data[i]
 
         def done():
@@ -273,32 +302,51 @@ class SimBoard:
             x = frac * n
             k = int(x)
             write(k)
-            if k < n and x > k:
-                for i in range(k * 4, k * 4 + 4):
+            if k < n and x > k:                          # no ECC: silent wrong bits (C031 too)
+                for i in range(k * u, k * u + u):
                     self.mem[o + i] &= data[i] | self.rng.getrandbits(8)
 
         return ("flash", dur, done, partial)
 
+    def _can_program(self, addr: int, n: int) -> bool:
+        """C031 (RM0490): only an erased double-word may be programmed; otherwise PROGERR and
+        nothing is written. The F407 programs any word (bits only go 1 -> 0)."""
+        if self.L.program_unit != 8:
+            return True
+        return self.rd(addr, n).count(0xFF) == n
+
     def load_segments(self, segs: list[tuple[int, bytes]]):
         """ST-Link programming: erase the touched sectors, then write (no partial effects)."""
         touched = set()
+        units = self.L.units
         for addr, data in segs:
-            for s, (base, size) in SECTORS.items():
+            for s, (base, size) in units.items():
                 if addr < base + size and addr + len(data) > base:
                     touched.add(s)
         for s in touched:
-            base, size = SECTORS[s]
-            o = base - SECTORS[0][0]
+            base, size = units[s]
+            o = base - self.L.flash_base
             self.mem[o:o + size] = b"\xff" * size
         for addr, data in segs:
-            o = addr - SECTORS[0][0]
+            o = addr - self.L.flash_base
             if o < 0 or o + len(data) > len(self.mem):
                 raise bench.BenchError("image_invalid", "[sim] image outside the simulated flash")
             self.mem[o:o + len(data)] = data
 
     # --- scheduler -----------------------------------------------------------------------
-    def reset(self, kind: str):
-        """kind: sw (SYSRESETREQ), iwdg, pin (ST-Link/NRST), por."""
+    def _cut_tx(self, lst: list) -> list:
+        kept = []
+        for e in lst:
+            if e[0] >= self.now:
+                continue
+            if e[1] > self.now:
+                e[2] = e[2][:int((self.now - e[0]) / US_PER_CHAR)].rstrip("\r\n")
+                e[1] = self.now
+            kept.append(e)
+        return kept
+
+    def reset(self, kind: str, hold_us: int = 0):
+        """kind: sw (SYSRESETREQ), iwdg, pin (ST-Link/NRST), por. hold_us: NRST held low this long."""
         r = self.req
         if r is not None and r[0] == "flash":
             end = self.req_t + r[1]
@@ -310,21 +358,16 @@ class SimBoard:
         old, self.proc, self.req = self.proc, None, None
         if old is not None:
             old.close()
-        kept = []
-        for e in self.tx:
-            if e[0] >= self.now:
-                continue
-            if e[1] > self.now:
-                e[2] = e[2][:int((self.now - e[0]) / US_PER_CHAR)].rstrip("\r\n")
-                e[1] = self.now
-            kept.append(e)
-        self.tx = kept
+        self.tx = self._cut_tx(self.tx)
+        for i, tap in enumerate(self.taps):
+            tap[:] = self._cut_tx(tap)
         self.tx_free = self.now
         self.rx.clear()
         self.rx_partial = ""
         self.tim2_at = None
         self.iwdg_running, self.iwdg_at = False, None
-        self.boot_t = self.now
+        self.hold_us = max(0, int(hold_us))
+        self.boot_t = self.now + self.hold_us
         self.csr |= RESET_FLAGS[kind]
         if kind == "por":
             self.ni = NoInit()
@@ -434,37 +477,56 @@ class SimBoard:
                 self.reset("iwdg")
             elif kind == 4:
                 self.nrst_at = None
-                self.reset("pin")
+                if self.on_nrst is not None:
+                    self.on_nrst(self.now)
+                self.reset("pin", self.nrst_hold_us)
             else:
                 self._wake()
 
     # --- host side -------------------------------------------------------------------
-    def host_write(self, data: bytes):
+    def host_write(self, data: bytes, latency_us: int | None = None) -> int:
+        """Bytes into the target's UART RX. Returns the time the last byte has been received."""
         text = data.decode("latin-1").replace("\r", "")
         parts = text.split("\n")
+        lat = self.T.usb_latency_us if latency_us is None else latency_us
+        end = max(self.now + lat, self.rx_free)
         for i, p in enumerate(parts):
             complete = i < len(parts) - 1
             if not p and not complete:
                 continue
-            start = max(self.now + self.T.usb_latency_us, self.rx_free)
+            start = max(self.now + lat, self.rx_free)
             end = start + (len(p) + (2 if complete else 0)) * US_PER_CHAR
             self.rx_free = end
             self.rx.append([start, end, p, complete])
+        return end
 
-    def host_read(self, timeout_s: float) -> str:
-        self.advance(self.now + math.ceil(max(0.0, timeout_s) * 1e6), stop_on_output=True)
+    def host_read(self, timeout_s: float, out_list: list | None = None, latency_us: int | None = None) -> str:
+        """Advance up to timeout_s (stopping at the next output) and return what has arrived.
+        out_list: read a tap (another UART) instead of the main one, without advancing past now."""
+        if out_list is None:
+            self.advance(self.now + math.ceil(max(0.0, timeout_s) * 1e6), stop_on_output=True)
+            out_list = self.tx
         out = []
-        lat = self.T.usb_latency_us
-        while self.tx and self.tx[0][1] + lat <= self.now:
-            out.append(self.tx.pop(0)[2])
+        lat = self.T.usb_latency_us if latency_us is None else latency_us
+        while out_list and out_list[0][1] + lat <= self.now:
+            out.append(out_list.pop(0)[2])
         return "".join(out)
+
+    def add_tap(self) -> list:
+        tap: list = []
+        self.taps.append(tap)
+        return tap
 
     # --- device helpers ----------------------------------------------------------------
     def _print(self, text: str):
+        if text == "ERR LINE":
+            self.err_lines += 1
         start = max(self.now, self.tx_free)
         end = start + (len(text) + 2) * US_PER_CHAR
         self.tx_free = end
         self.tx.append([start, end, text + "\r\n"])
+        for tap in self.taps:
+            tap.append([start, end, text + "\r\n"])
 
     def _flush(self):
         return ("sleep", max(0, self.tx_free - self.now))
@@ -563,24 +625,26 @@ class SimBoard:
         return int(self.T.iwdg_s * 1e6 * (1 + self.T.lsi_jitter * (2 * self.rng.random() - 1)))
 
     def _meta(self):
-        return latest(self.sector(1), self.sector(4))
+        m0, m1 = self.L.meta_units
+        return latest(self.sector(m0), self.sector(m1), self.L)
 
     def _valid(self, s: str):
-        return slot_valid(self.slot(s), s)
+        return slot_valid(self.slot(s), s, self.L)
 
     def _crc_cost(self, s: str) -> int:
-        h = parse_header(self.slot(s))
-        if header_error(h, s) is not None:
+        h = parse_header(self.slot(s), self.L)
+        if header_error(h, s, layout=self.L) is not None:
             return 50
         return self.T.crc_us_per_kb * h.payload_size // 1024
 
     def _naive_bootable(self) -> bool:
-        return looks_like_sp(struct.unpack("<I", self.slot("A")[HEADER_SIZE:HEADER_SIZE + 4])[0])
+        hs = self.L.header_size
+        return self.L.looks_like_sp(struct.unpack("<I", self.slot("A")[hs:hs + 4])[0])
 
     # --- bootloader (bl.c) -------------------------------------------------------------------
     def _boot(self):
-        yield ("sleep", self.T.reset_us + self.T.bl_init_us)
-        bl = self.rd(SECTORS[0][0], 32)
+        yield ("sleep", self.hold_us + self.T.reset_us + self.T.bl_init_us)
+        bl = self.rd(self.L.flash_base, 32)
         design = next((d for d, m in BL_MARK.items() if bl.startswith(m)), None)
         if design is None:
             yield ("halt",)                                  # blank or unknown BL: silent
@@ -597,17 +661,17 @@ class SimBoard:
 
     def _status(self, design: str) -> str:
         if design == "ab":
-            a = slot_status_word(self.slot("A"), "A")
-            b = slot_status_word(self.slot("B"), "B")
+            a = slot_status_word(self.slot("A"), "A", self.L)
+            b = slot_status_word(self.slot("B"), "B", self.L)
             rec = self._meta()
             active = slot_letter(rec.active) if rec else "-"
             state = ("trial" if rec.trial != TRIAL_NONE else "confirmed") if rec else "none"
             att, seq = (rec.attempts, rec.seq) if rec else (0, 0)
             e0, e1 = rec.erases() if rec else (0, 0)
         else:
-            a, b, state, att, seq, e0, e1 = naive_status_word(self.slot("A")), "-", "none", 0, 0, 0, 0
+            a, b, state, att, seq, e0, e1 = naive_status_word(self.slot("A"), self.L), "-", "none", 0, 0, 0, 0
             active = "A" if self._naive_bootable() else "-"
-        return (f"BL v0.1 design={design}{' hooks' if self.hooks else ''} target=f407 slotA={a} slotB={b} "
+        return (f"BL v0.1 design={design}{' hooks' if self.hooks else ''} target={self.L.target} slotA={a} slotB={b} "
                 f"active={active} state={state} attempts={att} seq={seq} erases={e0},{e1} "
                 f"reset={csr_text(self.reset_csr)}")
 
@@ -704,25 +768,29 @@ class SimBoard:
 
     def _meta_append(self, kind: int, active: int, trial: int, attempts: int, min_sc: int):
         """meta.c meta_append()."""
+        L = self.L
         rec = self._meta()
-        cur = rec.sector if rec else 1
+        cur = rec.sector if rec else L.meta_units[0]
         seq = rec.seq + 1 if rec else 1
-        e = dict(zip((1, 4), rec.erases())) if rec else {1: 0, 4: 0}
+        e = dict(zip(L.meta_units, rec.erases())) if rec else {u: 0 for u in L.meta_units}
         idx = free_index(self.sector(cur))
+        while idx is not None and not self._can_program(L.units[cur][0] + idx * 32, 32):
+            idx = idx + 1 if idx + 1 < L.records_per_meta(cur) else None   # C031: never re-program
         if idx is None:
-            other = other_meta(cur)
+            other = L.other_meta(cur)
             yield from self._fp("ROTATE", other)
             op = self._erase_op(other)
             yield op
             self._trace("ROTATE", other, op[1])
             e[other] += 1
             cur, idx = other, 0
-        r = pack_record(seq, kind, active, trial, attempts, min_sc, e[cur], e[other_meta(cur)])
-        addr = SECTORS[cur][0] + idx * 32
+        r = pack_record(seq, kind, active, trial, attempts, min_sc, e[cur], e[L.other_meta(cur)])
+        addr = L.units[cur][0] + idx * 32
+        split = 32 - L.program_unit                         # the unit holding the CRC goes last
         yield from self._fp("META", kind)
         t = self.now
-        yield self._program_op(addr, r[:28])
-        yield self._program_op(addr + 28, r[28:])          # CRC word last
+        yield self._program_op(addr, r[:split])
+        yield self._program_op(addr + split, r[split:])
         self._trace("META", kind, self.now - t)
 
     # --- update mode (bl_update.c) -------------------------------------------------------------
@@ -730,8 +798,18 @@ class SimBoard:
         ab = self.design == "ab"
         ni = self.ni
         sess = None
+        # C031 (bl_update.c): the 3 s inactivity timer restarts only on a line that is not answered
+        # with ERR LINE, so garbage does not keep the BL in update mode. The F407 restarts on any line.
+        garbage_restarts = self.L.target != "c031"
+        t_last = self.now
         while True:
-            line = yield ("read", int(self.T.update_timeout_s * 1e6) if timeout else None)
+            wait = None
+            if timeout:
+                wait = int(self.T.update_timeout_s * 1e6)
+                if not garbage_restarts:
+                    wait = max(0, t_last + wait - self.now)
+            n_err = self.err_lines
+            line = yield ("read", wait)
             if line is None:
                 sess = None
                 if ab:
@@ -740,7 +818,9 @@ class SimBoard:
                 return
             if not line:
                 continue                                      # uart_getline skips empty lines
-            if len(line) > BEGIN_MAX_CHARS or (len(line) > LINE_MAX_CHARS and not line.startswith("UPD BEGIN ")):
+            L = self.L
+            if (len(line) > L.begin_max or (len(line) > L.line_max and not line.startswith("UPD BEGIN "))
+                    or (L.target == "c031" and "\x00" in line)):
                 self._print("ERR LINE")
             elif line.startswith("UPD DATA "):
                 yield from self._upd_data(sess, line[9:])
@@ -764,35 +844,44 @@ class SimBoard:
                 pass
             else:
                 self._print("ERR LINE")
+            if self.err_lines == n_err:
+                t_last = self.now
 
     def _upd_begin(self, b64: str):
-        raw = None if " " in b64 else c_b64(b64, HEADER_SIZE)
-        if raw is None or len(raw) != HEADER_SIZE:
+        L = self.L
+        raw = None if " " in b64 else c_b64(b64, L.header_size)
+        if raw is None or len(raw) != L.header_size:
             self._print("ERR BAD_HDR")
             return None
-        h = parse_header(raw)
+        h = parse_header(raw, L)
         ab = self.design == "ab"
         if ab:
             rec = self._meta()
             target = "B" if rec is not None and rec.active == 0 else "A"
-            code = header_error(h, target)
+            code = header_error(h, target, layout=L)
             if code is None and h.security_counter < (rec.min_security_counter if rec else 0):
                 code = "VERSION"
         else:
-            target, code = "A", naive_header_error(h)
+            target, code = "A", naive_header_error(h, L)
         if code:
             self._print(f"ERR {code}")
             return None
         if ab:
             self.ni.update_in_progress = True
-        sector = SLOT_SECTOR[target]
-        yield from self._fp("ERASE", sector)
-        op = self._erase_op(sector)
-        yield op
-        self._trace("ERASE", sector, op[1])
-        self._print(f"OK ERASED {op[1]}")
+        # One fault point for the whole slot erase, index = its first erase unit (F407: the sector;
+        # C031: the first of four pages, firmware/boot_c0/bl_update.c). The C031 erases page by
+        # page, so a reset in page k leaves the pages before it erased and the ones after it intact.
+        units = L.slot_units[target]
+        yield from self._fp("ERASE", units[0])
+        total = 0
+        for unit in units:
+            op = self._erase_op(unit)
+            yield op
+            total += op[1]
+        self._trace("ERASE", units[0], total)
+        self._print(f"OK ERASED {total}")
         return {"h": h, "raw": raw, "target": target, "written": 0, "chunks": 0,
-                "base": SLOT_BASE[target] + HEADER_SIZE}
+                "base": L.slot_base[target] + L.header_size}
 
     def _upd_data(self, s: dict | None, rest: str):
         """cmd_data(): LINE -> STATE -> CRC -> SEQ -> SIZE -> idempotent retry -> program."""
@@ -810,19 +899,26 @@ class SimBoard:
         if s is None:
             self._print("ERR STATE")
             return
-        data = c_b64(b64, CHUNK)
+        L = self.L
+        data = c_b64(b64, L.chunk)
         if not data or zlib.crc32(data) != crc:
             self._print(f"ERR CRC {off}")
             return
-        if off % 4 or off > s["written"]:
+        if off % L.align or off > s["written"]:
             self._print(f"ERR SEQ {s['written']}")
             return
-        if len(data) % 4 or off + len(data) > s["h"].payload_size:
+        if len(data) % L.align:
+            self._print(f"ERR SEQ {s['written']}" if L.data_err_len == "SEQ" else "ERR SIZE")
+            return
+        if off + len(data) > s["h"].payload_size:
             self._print("ERR SIZE")
             return
         if off < s["written"]:
             same = off + len(data) <= s["written"] and self.rd(s["base"] + off, len(data)) == data
             self._print(f"OK {off}" if same else f"ERR SEQ {s['written']}")
+            return
+        if not self._can_program(s["base"] + off, len(data)):
+            self._print("ERR FLASH")
             return
         k = s["chunks"]
         yield from self._fp("DATA", k)
@@ -835,7 +931,8 @@ class SimBoard:
 
     def _upd_end(self, s: dict):
         h, target = s["h"], s["target"]
-        slot_base = SLOT_BASE[target]
+        slot_base = self.L.slot_base[target]
+        hs = self.L.header_size
         ab = self.design == "ab"
 
         def fail(line: str):
@@ -847,7 +944,7 @@ class SimBoard:
             if s["written"] < h.payload_size:
                 fail("ERR SHORT")
                 return
-            payload = self.rd(slot_base + HEADER_SIZE, h.payload_size)
+            payload = self.rd(slot_base + hs, h.payload_size)
             yield ("sleep", self.T.crc_us_per_kb * h.payload_size // 1024)
             if zlib.crc32(payload) != h.payload_crc32:
                 fail("ERR IMG_CRC")
@@ -856,6 +953,9 @@ class SimBoard:
             if hashlib.sha256(payload).digest() != h.payload_sha256:
                 fail("ERR IMG_SHA")
                 return
+        if not self._can_program(slot_base, hs):
+            fail("ERR FLASH")
+            return
         yield from self._fp("HDR", 0)
         op = self._program_op(slot_base, s["raw"])
         yield op
@@ -871,7 +971,7 @@ class SimBoard:
 
     # --- applications (app_rt.c, app.c) ------------------------------------------------------
     def _owners(self, s: str) -> dict:
-        payload = self.slot(s)[HEADER_SIZE:]
+        payload = self.slot(s)[self.L.header_size:]
         return {name: self.apps.get((s, name, payload[a:b])) for name, a, b in REGIONS}
 
     def _lockup(self):
@@ -882,7 +982,10 @@ class SimBoard:
     def _hardfault(self, own: dict):
         if own["hf"] is None:
             yield from self._lockup()
-        self._print("HARDFAULT pc=0x0800A1C4 lr=0x0800A0F7 cfsr=0x00010000 hfsr=0x40000000")
+        if self.L.hardfault_regs:
+            self._print("HARDFAULT pc=0x0800A1C4 lr=0x0800A0F7 cfsr=0x00010000 hfsr=0x40000000")
+        else:                                          # ARMv6-M: no CFSR/HFSR (SPEC-C031C6 3)
+            self._print("HARDFAULT pc=0x08004A1C lr=0x080049F7 cfsr=0x00000000 hfsr=0x00000000")
         yield self._flush()
         yield ("reset", "sw")
 
@@ -916,7 +1019,7 @@ class SimBoard:
                 evs.append(deadline_at)
             line = yield ("read", max(0, min(evs) - self.now) if evs else None)
             if line is not None:
-                if len(line) > APP_LINE_MAX:
+                if len(line) > self.L.app_line_max:
                     self._print("ERR line too long")
                 elif line:
                     yield from self._app_cmd(line.upper(), s, info, own)
@@ -927,7 +1030,7 @@ class SimBoard:
                 t = self.now
                 yield from self._fp("CONFIRM", 0)
                 rec = self._meta()
-                hdr = parse_header(self.slot(s))
+                hdr = parse_header(self.slot(s), self.L)
                 sc = max(rec.min_security_counter if rec else 0, hdr.security_counter if hdr else 0)
                 yield from self._meta_append(4, SLOT_NUM[s], TRIAL_NONE, 0, sc)
                 self._trace("CONFIRM", 0, self.now - t)
@@ -973,13 +1076,19 @@ class SimBoard:
 
 # --- host adapters ------------------------------------------------------------------------
 class SimSerial:
-    def __init__(self, board: SimBoard):
+    """The host's view of one target UART. tap: read a second UART (the witness VCP) instead of
+    the main one; reading a tap never advances simulated time (the main link does that)."""
+
+    def __init__(self, board: SimBoard, tap: list | None = None):
         self.board = board
+        self.tap = tap
 
     def write(self, data: bytes):
         self.board.host_write(data)
 
     def read_available(self, timeout: float) -> str:
+        if self.tap is not None:
+            return self.board.host_read(0, self.tap)
         return self.board.host_read(timeout)
 
     def close(self):
@@ -1022,8 +1131,9 @@ class SimProgrammer(bench.Programmer):
                 words = []
                 for i in range(n):
                     a = addr + 4 * i
-                    if UID_ADDR <= a < UID_ADDR + 12:
-                        k = (a - UID_ADDR) // 4
+                    uid_addr = self.board.L.uid_addr
+                    if uid_addr <= a < uid_addr + 12:
+                        k = (a - uid_addr) // 4
                         words.append(int(SIM_UID[8 * k:8 * k + 8], 16))
                     else:
                         words.append(struct.unpack("<I", self.board.rd(a, 4))[0])
@@ -1038,7 +1148,7 @@ class SimProgrammer(bench.Programmer):
         if image.suffix.lower() == ".hex":
             segs = ihex_to_segments(image.read_text(encoding="ascii"))
         elif image.suffix.lower() == ".bin":
-            segs = [(SECTORS[0][0], image.read_bytes())]
+            segs = [(self.board.L.flash_base, image.read_bytes())]
         else:
             raise bench.BenchError("image_invalid", f"[sim] cannot flash {image.name}")
         self._spend(0.05)

@@ -5,7 +5,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 
-from .layout import META_MAGIC, META_RECORD, TRIAL_NONE, KIND, SLOT_NAME
+from .layout import F407, META_MAGIC, META_RECORD, TRIAL_NONE, KIND, SLOT_NAME, Layout
 
 REC_FMT = "<IIBBBBIIII"     # 28 bytes before the CRC
 
@@ -20,8 +20,9 @@ class MetaRecord:
     min_security_counter: int
     erase_this: int
     erase_other: int
-    sector: int = 0          # 1 = META0, 4 = META1
+    sector: int = 0          # erase unit: F407 1 = META0, 4 = META1; C031 page 6 / 7
     index: int = 0
+    meta1: bool = False      # the record lives in META1
 
     @property
     def kind_name(self) -> str:
@@ -41,7 +42,7 @@ class MetaRecord:
 
     def erases(self) -> tuple[int, int]:
         """(META0 erase count, META1 erase count)."""
-        if self.sector == 4:
+        if self.meta1:
             return self.erase_other, self.erase_this
         return self.erase_this, self.erase_other
 
@@ -53,26 +54,27 @@ def pack_record(seq: int, kind: int, active: int, trial: int, attempts: int, min
     return body + struct.pack("<I", zlib.crc32(body))
 
 
-def unpack_record(b: bytes, sector: int = 0, index: int = 0) -> MetaRecord | None:
+def unpack_record(b: bytes, sector: int = 0, index: int = 0, meta1: bool | None = None) -> MetaRecord | None:
     if len(b) < META_RECORD:
         return None
     f = struct.unpack_from(REC_FMT, b, 0)
     (crc,) = struct.unpack_from("<I", b, 28)
     if f[0] != META_MAGIC or zlib.crc32(b[:28]) != crc:
         return None
-    return MetaRecord(f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], sector, index)
+    return MetaRecord(f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], sector, index,
+                      sector == 4 if meta1 is None else meta1)
 
 
 MAGIC_BYTES = struct.pack("<I", META_MAGIC)
 
 
-def scan_sector(data: bytes, sector: int) -> list[MetaRecord]:
+def scan_sector(data: bytes, sector: int, meta1: bool | None = None) -> list[MetaRecord]:
     data = bytes(data)
     out = []
     i = data.find(MAGIC_BYTES)
     while i >= 0:
         if i % META_RECORD == 0:
-            r = unpack_record(data[i:i + META_RECORD], sector, i // META_RECORD)
+            r = unpack_record(data[i:i + META_RECORD], sector, i // META_RECORD, meta1)
             if r is not None:
                 out.append(r)
         i = data.find(MAGIC_BYTES, i + 1)
@@ -86,6 +88,7 @@ def free_index(data: bytes) -> int | None:
     return idx if idx < len(data) // META_RECORD else None
 
 
-def latest(meta0: bytes, meta1: bytes) -> MetaRecord | None:
-    recs = scan_sector(meta0, 1) + scan_sector(meta1, 4)
+def latest(meta0: bytes, meta1: bytes, layout: Layout = F407) -> MetaRecord | None:
+    u0, u1 = layout.meta_units
+    recs = scan_sector(meta0, u0, False) + scan_sector(meta1, u1, True)
     return max(recs, key=lambda r: r.seq) if recs else None

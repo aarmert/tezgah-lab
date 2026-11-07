@@ -12,7 +12,7 @@ from .classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verd
 from .config import StressConfig
 from .csvlog import Wear
 from .images import Image, ImageSet
-from .layout import SECTORS, other_slot
+from .layout import Layout, other_slot
 from .meta import free_index
 from .link import Link
 from .proto import Event
@@ -41,10 +41,17 @@ class Ctx:
     hooks: bool | None = None
     uid: str | None = None
     versions: dict = field(default_factory=dict)
+    bridge: object = None            # EspBridgeTransport when --link esp (also the link's transport)
+    witness: object = None           # esp_bridge.Witness on the VCP when --link esp
+    reset_source: str = "hook"       # hook | esp (SPEC-ESP32 3)
 
     @property
     def clock(self):
         return self.link.clock
+
+    @property
+    def layout(self) -> Layout:
+        return self.images.layout
 
     def golden(self):
         return self.images.dir / self.scfg.golden_name(self.design)
@@ -195,8 +202,9 @@ def flash_metafull(ctx: Ctx) -> None:
 def metafull_problem(st: FlashState) -> str | None:
     rec = st.meta()
     idx = free_index(st.META0)
-    free = 0 if idx is None else SECTORS[1][1] // 32 - idx
-    if rec is None or rec.sector != 1 or idx is None or free > META_NEAR_FULL_FREE:
+    L = st.layout
+    free = 0 if idx is None else L.records_per_meta() - idx
+    if rec is None or rec.sector != L.meta_units[0] or idx is None or free > META_NEAR_FULL_FREE:
         return f"META0 is not near full (latest in sector {rec.sector if rec else '-'}, {free} free records)"
     return None
 
@@ -379,6 +387,18 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
     # retried, so a restart cannot hide a fault.
     can_restart = not any(entries) and cut_at is None and not plan.trace
     inj = Injector(rng, plan.noise_rate, cut_at=cut_at)
+    # --reset-source esp: entry 0 is an ESP32 NRST pulse armed on its trigger line, not FAULT ARM
+    esp_entry = plan.entry0 if plan.reset_source == "esp" and plan.entry0 else None
+    armer = None
+    fires_mark = len(ctx.bridge.fires) if ctx.bridge is not None else 0
+    wit_mark = ctx.witness.mark() if ctx.witness is not None else 0
+    if esp_entry is not None:
+        if ctx.bridge is None:
+            raise BenchError("bad_argument", "--reset-source esp needs --link esp (the ESP32 bridge).")
+        from .esp_bridge import EspArmer
+        hook_entries = [None, plan.entry1]
+    else:
+        hook_entries = entries
     t_upd = clock.now()
     upd_mark = link.mark()          # boot accounting covers everything from the first UPD on
     retries, restarts = 0, 0
@@ -392,17 +412,23 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
             if er.status.design != ctx.design:
                 raise BenchError("wrong_firmware", f"BL reports design={er.status.design}, run wants {ctx.design}.",
                                  [f"Flash golden_{ctx.design}.bin or pass --design {er.status.design}"])
+            if er.status.target != ctx.layout.target:
+                raise BenchError("wrong_firmware", f"BL reports target={er.status.target}, run wants "
+                                 f"--target {ctx.layout.target}.",
+                                 [f"Pass --target {er.status.target}", "Check --config (bench-c031.toml for the C031)"])
         if not er.ok:
             # No 'BL update' after ENTER_TRIES attempts: nothing was updated, so there is nothing to
             # observe (an empty window would read as ÖLÜ). The trial is a setup failure.
             setup_failed = f"could not enter update mode after {ENTER_TRIES} tries ({er.why})"
             break
-        if any(entries) or plan.trace:
-            err = arm_faults(link, entries, trace=plan.trace)
+        if any(hook_entries) or plan.trace:
+            err = arm_faults(link, hook_entries, trace=plan.trace)
             if err:
                 raise BenchError("hooks_missing", err,
                                  ["This test needs the hooks build of the BL/apps (BL status line shows 'hooks')"])
-        up = Updater(link, inj, ctx.max_retries).transfer(new)
+        if esp_entry is not None:
+            armer = EspArmer(ctx.bridge, esp_entry, link)
+        up = Updater(link, inj, ctx.max_retries, before_send=armer).transfer(new)
         retries += up.retries
         ctx.wear.slot(tgt, up.erases)
         start = up.reset_index if up.status in ("reset", "left") else link.cursor
@@ -475,8 +501,27 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
         if v.running is not None:
             w = summarize(rr.events)
 
+    # ESP pulses: the host explains the resets it fired. An armed pulse that has not been reported
+    # yet (its delay ran past the window) is waited for, then the bridge is disarmed.
+    fires = []
+    if ctx.bridge is not None and esp_entry is not None:
+        if armer is not None and armer.armed:
+            fires = ctx.bridge.settle_fires(fires_mark, 0.5 + esp_entry[2] / 1e6)
+        try:
+            ctx.bridge.disarm()
+        except BenchError as e:
+            notes.append(f"esp disarm failed: {e.summary}")
+        fires = ctx.bridge.fires_since(fires_mark)
+        notes.append("reset_source=esp")
+        if not armer or not armer.armed:
+            notes.append("esp_not_armed (trigger line never sent)")
+        elif not fires:
+            notes.append("esp_not_fired")
+        for f in fires:
+            notes.append(f"late_us={f.late_us}")
+
     # SPEC 7: boots the trial cannot explain (an unexpected reset) are never accepted
-    bc = count_boots(link.events[upd_mark:])
+    bc = count_boots(link.events[upd_mark:], external_resets=len(fires))
     if bc.unexpected:
         notes.append(f"unexpected_reset={bc.unexpected}")
         v = check_boots(v, bc)
@@ -523,9 +568,15 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
 
     rec_meta = st.meta() if ctx.design == "ab" else None
     fired_ev = [e.data for e in link.events[upd_mark:] if e.kind == "fired"]
-    fired = sum(d[0] for d in fired_ev)
+    fired = sum(d[0] for d in fired_ev) + len(fires)
     if plan.entry1 is not None:
         notes.append(f"fault2={fault2_state(plan, fired_ev)}")
+    if ctx.witness is not None:
+        ctx.witness.settle(0.2)
+        from .esp_bridge import compare
+        miss = compare([e.line for e in link.events[upd_mark:]], [ln for _, ln in ctx.witness.lines[wit_mark:]])
+        if miss:
+            notes.append(miss)
     ctx.wear.trial()
     ctx.wear.save()
     row.update(

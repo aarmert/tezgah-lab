@@ -20,3 +20,15 @@ rollback = 45           # noconfirm: 3 x (5 s trial deadline + ~2 s IWDG) before
 [golden]
 ab = "golden_ab.bin"
 naive = "golden_naive.bin"
+
+
+# NUCLEO-C031C6 target (python -m stress ... --target c031, docs/stress/SPEC-C031C6.md).
+[c031]
+images_dir = "firmware/boot_c0/build/images"   # built by firmware/boot_c0; manifest.json says "target": "c031"
+bench_config = "bench-c031.toml"              # copy bench-c031.example.toml; never falls back to bench.toml
+
+# ESP32-S3 bridge (esp32/bridge, docs/stress/SPEC-ESP32.md): --link esp (default on c031),
+# --reset-source esp. The CH343 "USB Single Serial" port is the ESP32's UART0.
+[esp]
+port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_<serial>-if00"
+baud = 921600

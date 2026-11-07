@@ -32,6 +32,9 @@ class Link:
         self.events: list[Event] = []     # every received line, parsed, in order
         self.cursor = 0                   # next unread event for next_event()
         self.unread_from = 0              # cursor before the last drain()
+        self.side: list = []              # side channels (the witness VCP): poll(link) on every pump
+        if hasattr(transport, "attach"):
+            transport.attach(self)
 
     # --- transcript -------------------------------------------------------------
     def _log(self, d: str, text: str):
@@ -48,6 +51,8 @@ class Link:
     # --- io -------------------------------------------------------------------------
     def pump(self, timeout: float) -> int:
         data = self.t.read_available(max(0.0, timeout))
+        for ch in self.side:
+            ch.poll(self)
         if not data:
             return 0
         self.buf += data
@@ -62,13 +67,18 @@ class Link:
             n += 1
         return n
 
-    def send_line(self, text: str):
+    def send_line(self, text: str, raw: bool = False):
+        """raw: the line carries injected (corrupted) bytes; a bridge sends it as raw bytes."""
         self._log(">", text)
-        self.t.write((text + "\r\n").encode("latin-1", errors="replace"))
+        self._write((text + "\r\n").encode("latin-1", errors="replace"), raw)
 
     def send_raw(self, data: bytes, note: str = ""):
         self._log(">", f"{data.decode('latin-1')!r} (raw{', ' + note if note else ''})")
-        self.t.write(data)
+        self._write(data, True)
+
+    def _write(self, data: bytes, raw: bool):
+        w = getattr(self.t, "write_raw", None) if raw else None
+        (w or self.t.write)(data)
 
     def mark(self) -> int:
         return len(self.events)
@@ -119,3 +129,5 @@ class Link:
 
     def close(self):
         self.t.close()
+        for ch in self.side:
+            ch.close()

@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .images import build_header
-from .layout import (BOARD_ID, GOLDEN_SIZE, HEADER_SIZE, KIND_NUM, META_RECORD, RAM_TOP, SECTORS,
-                     TRIAL_NONE, payload_addr, version_int)
+from .layout import F407, KIND_NUM, META_RECORD, TRIAL_NONE, Layout, version_int
 from .meta import pack_record
 
 REGIONS = (("vec", 0x000, 0x188), ("rt", 0x200, 0x800), ("banner", 0x800, 0xA00),
@@ -50,79 +49,102 @@ def prng(key: str, n: int) -> bytes:
     return bytes(out[:n])
 
 
-def make_payload(base: str, slot: str) -> bytes:
+def _key(base: str, slot: str, layout: Layout) -> str:
+    # F407 keys are unchanged from before the C031 target existed (same bytes, same manifests)
+    return f"{base}:{slot}" if layout.target == "f407" else f"{layout.target}:{base}:{slot}"
+
+
+def make_payload(base: str, slot: str, layout: Layout = F407) -> bytes:
     version, _, size, variant = APPS[base]
-    key = f"{base}:{slot}"
+    key = _key(base, slot, layout)
     p = bytearray(prng(key + ":fill", size))
     for name, a, b in REGIONS:
         p[a:b] = prng(f"{key}:{name}", b - a)
-    p[0:8] = struct.pack("<II", RAM_TOP, payload_addr(slot) + 0x201)
+    p[0:8] = struct.pack("<II", layout.ram_top, layout.payload_addr(slot) + 0x201)
     text = f"BOOT app {version}{'-' + variant if variant else ''}".encode()
     p[0x800:0x800 + len(text)] = text
     return bytes(p)
 
 
-def make_image(base: str, slot: str) -> bytes:
+def make_image(base: str, slot: str, layout: Layout = F407) -> bytes:
     version, sc, _, _ = APPS[base]
-    payload = make_payload(base, slot)
+    payload = make_payload(base, slot, layout)
     return build_header(fw_version=version_int(version), security_counter=sc,
-                        link_addr=payload_addr(slot), payload=payload) + payload
+                        link_addr=layout.payload_addr(slot), payload=payload, layout=layout) + payload
 
 
-def make_bad_image(kind: str, slot: str) -> bytes:
-    v2 = make_payload("v2", slot)
-    link = payload_addr(slot)
+# F407 board id: the C031's wrong_board image carries a real F407 board id (SPEC-C031C6 2)
+F407_BOARD_ID = F407.board_id
+OVERSIZE = {"f407": 20000, "c031": 9000}
+
+
+def make_bad_image(kind: str, slot: str, layout: Layout = F407) -> bytes:
+    v2 = make_payload("v2", slot, layout)
+    link = layout.payload_addr(slot)
     ver = version_int("2.0.0")
+    kw = dict(fw_version=ver, security_counter=1, link_addr=link, layout=layout)
     if kind == "bad_crc":
         p = bytearray(v2)
         p[0x1500] ^= 0x01
-        return build_header(fw_version=ver, security_counter=1, link_addr=link, payload=v2) + bytes(p)
+        return build_header(payload=v2, **kw) + bytes(p)
     if kind == "wrong_board":
-        return build_header(fw_version=ver, security_counter=1, link_addr=link, payload=v2,
-                            board_id=0xC0C0C0C0) + v2
+        if layout.target == "f407":
+            return build_header(payload=v2, board_id=0xC0C0C0C0, **kw) + v2
+        # C031 (firmware/boot_c0/mkimage.py): the real F407 v2 app, with the F407 board id and link
+        # address, in the C0 header format (header_crc at 252), so BEGIN answers BOARD. A literal
+        # F407 .img would answer BAD_HDR: its header_crc is at 508.
+        f4 = make_payload("v2", slot, F407)
+        return build_header(fw_version=ver, security_counter=1, link_addr=F407.payload_addr(slot),
+                            payload=f4, board_id=F407_BOARD_ID, layout=layout) + f4
     if kind == "truncated":
-        return build_header(fw_version=ver, security_counter=1, link_addr=link, payload=v2) + v2[:len(v2) // 2]
+        return build_header(payload=v2, **kw) + v2[:len(v2) // 2]
     if kind == "oversize":
-        p = v2 + prng(f"oversize:{slot}", 20000 - len(v2))
-        return build_header(fw_version=ver, security_counter=1, link_addr=link, payload=p) + p
+        n = OVERSIZE.get(layout.target, 20000)
+        p = v2 + prng(f"oversize:{slot}", n - len(v2))
+        return build_header(payload=p, **kw) + p
     raise ValueError(kind)
 
 
 BAD_KINDS = ("bad_crc", "wrong_board", "truncated", "oversize")
 
 
-META_FULL_RECORDS = SECTORS[1][1] // META_RECORD - 1     # mkimage.py META_FULL_RECORDS (511)
+def meta_full_records(layout: Layout = F407) -> int:
+    """mkimage.py META_FULL_RECORDS: one record short of a full META0 (F407 511, C031 63)."""
+    return layout.records_per_meta() - 1
 
 
-def make_golden(design: str, meta_records: int = 1) -> bytes:
-    """design ab / naive; ab with meta_records = META_FULL_RECORDS is golden_ab_metafull."""
-    g = bytearray(b"\xff" * GOLDEN_SIZE)
-    bl = BL_MARK[design] + prng(f"bl:{design}", 0x3000)
+META_FULL_RECORDS = meta_full_records(F407)
+
+
+def make_golden(design: str, meta_records: int = 1, layout: Layout = F407) -> bytes:
+    """design ab / naive; ab with meta_records = meta_full_records() is golden_ab_metafull."""
+    g = bytearray(b"\xff" * layout.golden_size)
+    bl = BL_MARK[design] + prng(f"bl:{design}", min(0x3000, layout.bl_size - len(BL_MARK[design])))
     g[0:len(bl)] = bl
     if design == "ab":
-        o = SECTORS[1][0] - SECTORS[0][0]
+        o = layout.meta_region(0)[0] - layout.flash_base
         for n in range(1, meta_records + 1):
             kind = KIND_NUM["CONFIRMED"] if n == 1 else KIND_NUM["CONFIRM"]
             g[o + (n - 1) * META_RECORD:o + n * META_RECORD] = pack_record(n, kind, 0, TRIAL_NONE, 0, 1, 0, 0)
-    v1 = make_image("v1", "A")
-    o = SECTORS[2][0] - SECTORS[0][0]
+    v1 = make_image("v1", "A", layout)
+    o = layout.slot_base["A"] - layout.flash_base
     g[o:o + len(v1)] = v1
     return bytes(g)
 
 
-def write_image_set(out: Path) -> Path:
+def write_image_set(out: Path, layout: Layout = F407) -> Path:
     """Write every image of SPEC 2 plus golden_*.bin and manifest.json. Idempotent."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     files: dict[str, bytes] = {}
     for slot in ("A", "B"):
         for base in APPS:
-            files[f"{base}_{slot}.img"] = make_image(base, slot)
+            files[f"{base}_{slot}.img"] = make_image(base, slot, layout)
         for kind in BAD_KINDS:
-            files[f"{kind}_{slot}.img"] = make_bad_image(kind, slot)
+            files[f"{kind}_{slot}.img"] = make_bad_image(kind, slot, layout)
     for design in ("ab", "naive"):
-        files[f"golden_{design}.bin"] = make_golden(design)
-    files["golden_ab_metafull.bin"] = make_golden("ab", META_FULL_RECORDS)
+        files[f"golden_{design}.bin"] = make_golden(design, layout=layout)
+    files["golden_ab_metafull.bin"] = make_golden("ab", meta_full_records(layout), layout)
     manifest = {}
     for name, data in files.items():
         p = out / name
@@ -131,23 +153,25 @@ def write_image_set(out: Path) -> Path:
         ent = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
         if name.endswith(".img"):
             base, slot = name[:-4].rsplit("_", 1)
-            ent.update(payload_sha256=hashlib.sha256(data[HEADER_SIZE:]).hexdigest(), slot=slot,
+            ent.update(payload_sha256=hashlib.sha256(data[layout.header_size:]).hexdigest(), slot=slot,
                        version=APPS.get(base, ("2.0.0",))[0] if base in APPS else "2.0.0")
+        if layout.target != "f407":
+            ent["target"] = layout.target          # like firmware/boot_c0/mkimage.py
         manifest[name] = ent
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return out
 
 
-def app_registry() -> dict[tuple[str, str, bytes], AppInfo]:
+def app_registry(layout: Layout = F407) -> dict[tuple[str, str, bytes], AppInfo]:
     """(slot, region, region bytes) -> AppInfo for every known app image."""
     reg = {}
     for base, (version, sc, _, variant) in APPS.items():
         info = AppInfo(base, version + (f"-{variant}" if variant else ""), variant, sc)
         for slot in ("A", "B"):
-            p = make_payload(base, slot)
+            p = make_payload(base, slot, layout)
             for name, a, b in REGIONS:
                 reg[(slot, name, p[a:b])] = info
     return reg
 
 
-assert BOARD_ID == 0xF407D15C
+assert F407_BOARD_ID == 0xF407D15C
