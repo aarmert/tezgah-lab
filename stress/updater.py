@@ -19,6 +19,9 @@ REPLY_TIMEOUT_S = 1.0
 END_TIMEOUT_S = 1.0
 # Lines that mean the BL left update mode (reset, gave up, booted): stop the transfer there.
 LEFT_UPDATE = ("status", "timeout", "jump", "banner", "wait")
+# Boot-flow lines that, when they follow the last 'BL update|resume|nofw', show the BL is no longer
+# waiting for UPD commands (e.g. 'BL timeout' -> 'BL jump A' -> 'BOOT app').
+LEFT_BEFORE_START = ("status", "timeout", "jump", "banner", "hardfault", "rollback", "repair")
 NOISE_RETRYABLE_BEGIN = {"BAD_HDR", "BOARD", "SIZE", "LINK", "LINE"}
 
 
@@ -69,7 +72,8 @@ class Injector:
 
 @dataclass
 class TransferResult:
-    status: str = "none"            # commit | err | reset | cut | failed
+    status: str = "none"            # commit | err | reset | cut | failed | left (BL had left update
+    #                                 mode before the host sent anything)
     err_code: str = ""
     err_line: str = ""
     retries: int = 0
@@ -107,10 +111,29 @@ class Updater:
             if e.kind == "reply" and accept(e):
                 return "reply", e
 
+    def left_update_mode(self) -> int | None:
+        """Consume the unread lines. Returns the link.events index of the first boot-flow line after
+        the last 'BL update|resume|nofw' (the BL no longer waits for UPD commands), or None."""
+        link = self.link
+        link.drain()
+        idx = None
+        for i in range(link.unread_from, len(link.events)):
+            k = link.events[i].kind
+            if k == "wait":
+                idx = None
+            elif k in LEFT_BEFORE_START and idx is None:
+                idx = i
+        return idx
+
     def transfer(self, image: Image) -> TransferResult:
         r = TransferResult()
         hdr, payload = image.data[:HEADER_SIZE], image.data[HEADER_SIZE:]
-        self.link.drain()
+        left = self.left_update_mode()
+        if left is not None:
+            e = self.link.events[left]
+            r.status, r.reset_index, r.left_kind = "left", left, e.kind
+            r.notes.append(f"BL had left update mode ({e.line.strip()[:40]}) before the transfer started")
+            return r
 
         def reset(e) -> TransferResult:
             r.status = "reset"

@@ -54,12 +54,19 @@ line shows `hooks`). Run `calibrate` once per design, and again whenever the fir
    `UPD END`, stop-and-wait with retries. The new image is the other version, in the inactive slot
    (naive: always A). With no armed fault and no cut, the host may start the whole update again (at
    most 3 times) when the BL gave up after lost lines (`BL timeout`); an unexpected reset is never
-   retried.
+   retried. If `UPD` does not give `BL update` after 3 tries, the trial is a setup failure
+   (BELİRSİZ, note `setup_failed`); nothing is observed.
 3. **Observe**: read lines until the board settles (confirmed app, no reset for `settle_s`), the BL
    waits in `update|resume|nofw`, or `observe_s` passes.
-4. **Read + classify**: a second ST-Link read, then `classify.py`.
-5. **BEKLİYOR**: the host finishes the update (again from the app with `UPD` if the BL timed out to
-   the old app) and must reach YENİ within `resume_limit_s`.
+4. **Read + classify**: a second ST-Link read, then `classify.py`. When the window ends in
+   `BL update|resume` with no jump/banner before it, the resume (step 5) starts first and the read
+   comes after it: the BL waits only 3 s, an ST-Link read can take longer.
+5. **BEKLİYOR**: the host finishes the update and must reach YENİ within `resume_limit_s`. The
+   updater never sends UPD commands blindly: if the lines since the last `BL update|resume` show the
+   BL left update mode (`BL timeout`, jump, banner), it classifies that and, when the old app runs,
+   enters update mode again with `UPD` (note `resume_reentered=<n>`).
+   Then the boots are counted (SPEC 7): a BL status line no known reset explains makes the trial
+   BELİRSİZ (note `unexpected_reset=<n>`).
 6. **Recovery** after ÖLÜ, YANLIŞ, BELİRSİZ or a failed resume: reset first; if that does not
    give a usable baseline, flash `golden_<design>.bin` under reset, then verify with an ST-Link read.
    `stlink_needed=1`, `recovery_s` recorded. If recovery fails the run stops.
@@ -76,7 +83,7 @@ line shows `hooks`). Run `calibrate` once per design, and again whenever the fir
 4. **ESKİ**: the running app is the old version and its slot holds the old image.
 5. **YENİ**: the running app is the new version and its slot holds the new image.
 6. **BELİRSİZ**: nothing above (for example the last banner was followed by a reset and nothing
-   booted again). Not accepted.
+   booted again), an unexpected reset, or a setup failure. Not accepted.
 
 Accepted = ESKİ, YENİ, BEKLİYOR with `resume_ok`. The test's own pass criterion (`expect_ok`) can be
 stricter (table above). With the naive BL every jump into a half-written slot is YANLIŞ by rule 1,

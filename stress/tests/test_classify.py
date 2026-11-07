@@ -1,7 +1,7 @@
 import unittest
 
-from stress.classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verdict, classify,
-                             combine_resume, summarize)
+from stress.classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verdict, check_boots, classify,
+                             combine_resume, count_boots, summarize)
 from stress.proto import parse_line
 
 ST = ("BL v0.1 design=ab hooks slotA=ok:1.0.0 slotB=ok:2.0.0 active=A state=trial attempts=0 seq=5 "
@@ -112,6 +112,42 @@ class CombineResume(unittest.TestCase):
     def test_eski_after_resume_not_accepted(self):
         v = combine_resume(self.first, Verdict(ESKI, True, ["old"]), True)
         self.assertEqual((v.outcome, v.accepted), (BEKLIYOR, False))
+
+
+STS = "BL v0.1 design=ab hooks target=f407 slotA=ok:1.0.0 slotB=bad active=A state=confirmed attempts=0 " \
+      "seq=5 erases=0,0 reset={}"
+
+
+class Boots(unittest.TestCase):
+    def test_explained_resets(self):
+        lines = ["OK UPD", STS.format("SFT,PIN"), "BL update", "OK ERASED 250000",
+                 STS.format("SFT,PIN"), "BL fault_fired 1 ERASE 3 1200", "BL resume", "OK COMMIT",
+                 STS.format("SFT,PIN"), "BL fault_cancelled 1 JUMP 1 9000", "BL jump B trial",
+                 "BOOT app 2.0.0-crash slot=B trial=1 reset=SFT,PIN",
+                 "HARDFAULT pc=0x08001234 lr=0x08001235 cfsr=0x00010000 hfsr=0x40000000",
+                 STS.format("SFT,PIN"), "BL jump B trial", STS.format("IWDG,PIN")]
+        bc = count_boots(ev(*lines))
+        self.assertEqual((bc.boots, bc.explained, bc.unexpected), (5, 5, 0))
+        self.assertEqual(bc.causes, {"commands": 2, "hardfault": 1, "fired": 1, "iwdg": 1})
+
+    def test_surplus_boot_is_belirsiz(self):
+        lines = ["OK UPD", STS.format("SFT,PIN"), "BL update", "OK COMMIT", STS.format("SFT,PIN"),
+                 "BL jump B trial", "BOOT app 2.0.0 slot=B trial=1 reset=SFT,PIN", STS.format("PIN"),
+                 "BL jump B trial", "BOOT app 2.0.0 slot=B trial=1 reset=PIN", "APP confirmed"]
+        bc = count_boots(ev(*lines))
+        self.assertEqual(bc.unexpected, 1)
+        v = check_boots(Verdict(YENI, True, ["new"]), bc)
+        self.assertEqual((v.outcome, v.accepted), (BELIRSIZ, False))
+        self.assertIn("1 unexpected reset", v.reasons[-1])
+        for unsafe in (OLU, YANLIS):          # an unsafe outcome stays what it is
+            self.assertEqual(check_boots(Verdict(unsafe, False, ["x"]), bc).outcome, unsafe)
+        ok = Verdict(ESKI, True, ["old"])
+        self.assertIs(check_boots(ok, count_boots(ev("OK UPD", STS.format("SFT,PIN")))), ok)
+
+    def test_deficit_is_fine(self):
+        # a BOOT fault that resets before the status line: fewer boots than causes
+        bc = count_boots(ev("OK UPD", "BL fault_fired 2 BOOT 0 0", STS.format("SFT,PIN")))
+        self.assertEqual((bc.boots, bc.explained, bc.unexpected), (1, 3, 0))
 
 
 if __name__ == "__main__":

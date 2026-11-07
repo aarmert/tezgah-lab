@@ -31,6 +31,7 @@ class Link:
         self.buf = ""
         self.events: list[Event] = []     # every received line, parsed, in order
         self.cursor = 0                   # next unread event for next_event()
+        self.unread_from = 0              # cursor before the last drain()
 
     # --- transcript -------------------------------------------------------------
     def _log(self, d: str, text: str):
@@ -73,8 +74,11 @@ class Link:
         return len(self.events)
 
     def drain(self, wait_s: float = 0.0):
-        """Read whatever has arrived (waiting up to wait_s) and mark it as consumed."""
+        """Read whatever has arrived (waiting up to wait_s) and mark it as consumed.
+        `unread_from` keeps where the consumed-but-unread lines start, for callers that must
+        inspect what they skip (Updater.left_update_mode)."""
         deadline = self.clock.now() + wait_s
+        self.unread_from = self.cursor
         self.pump(0)
         while deadline - self.clock.now() > 1e-6:
             self.pump(min(0.05, deadline - self.clock.now()))

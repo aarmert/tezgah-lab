@@ -9,6 +9,10 @@
 5. YENİ     the running app is the new version and its slot holds the new image
 6. BELİRSİZ nothing above matched (e.g. the last app banner was followed by a reset and nothing
             booted again). Not accepted. (Added to SPEC 7 as the explicit fall-through.)
+
+Over the whole trial (update, observe and resume windows) the boots are counted as well
+(count_boots / check_boots, SPEC 7 "unexpected reset"): a BL status line that no known cause
+explains turns an otherwise safe outcome into BELİRSİZ (not accepted). YANLIŞ/ÖLÜ stay.
 """
 from __future__ import annotations
 
@@ -146,3 +150,50 @@ def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool) 
         f"resume ended {resumed.outcome}" + ("" if within_limit else " (after resume_limit_s)"))
     reasons = [first.reasons[0].split(";")[0] + "; " + why]
     return Verdict(BEKLIYOR, ok, reasons, resumed.running if resumed else None, ok)
+
+
+# --- boot accounting (SPEC 7, unexpected reset) ---------------------------------------------
+EXPECTED_RESET_REPLIES = ("OK UPD", "OK COMMIT", "OK RESET")
+
+
+@dataclass
+class BootCount:
+    boots: int            # BL status lines
+    explained: int        # resets with a known cause
+    causes: dict
+
+    @property
+    def unexpected(self) -> int:
+        return max(0, self.boots - self.explained)
+
+
+def count_boots(events: list[Event]) -> BootCount:
+    """Every reset makes the BL print one status line (unless the next reset comes first, which
+    only lowers `boots`). Known causes: the app's OK UPD / OK RESET and the BL's OK COMMIT replies,
+    an app HARDFAULT line (it resets), the faults that actually expired ('BL fault_fired n', n
+    resets), and IWDG resets (IWDG in the status line's reset= flags)."""
+    causes = {"commands": 0, "hardfault": 0, "fired": 0, "iwdg": 0}
+    boots = 0
+    for e in events:
+        if e.kind == "status":
+            boots += 1
+            if "IWDG" in e.data.reset.split(","):
+                causes["iwdg"] += 1
+        elif e.kind == "fired":
+            causes["fired"] += e.data[0]
+        elif e.kind == "hardfault":
+            causes["hardfault"] += 1
+        elif e.kind == "reply" and e.line.strip() in EXPECTED_RESET_REPLIES:
+            causes["commands"] += 1
+    return BootCount(boots, sum(causes.values()), causes)
+
+
+def check_boots(v: Verdict, bc: BootCount) -> Verdict:
+    """A trial with more boots than explained resets is not accepted: BELİRSİZ, unless the outcome
+    is already unsafe (YANLIŞ/ÖLÜ)."""
+    n = bc.unexpected
+    if not n or v.outcome in UNSAFE:
+        return v
+    why = (f"{n} unexpected reset(s): {bc.boots} BL boots, {bc.explained} explained "
+           f"({', '.join(f'{k}={c}' for k, c in bc.causes.items() if c) or 'none'})")
+    return Verdict(BELIRSIZ, False, v.reasons + [why], v.running, v.resume_ok)

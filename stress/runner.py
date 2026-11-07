@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass, field
 
 from ._bench import BenchError
-from .classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verdict, classify, combine_resume,
-                       summarize)
+from .classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verdict, check_boots, classify,
+                       combine_resume, count_boots, summarize)
 from .config import StressConfig
 from .csvlog import Wear
 from .images import Image, ImageSet
@@ -17,9 +17,10 @@ from .link import Link
 from .proto import Event
 from .stlink import FlashState, Probe
 from .tests_defs import TrialPlan, judge
-from .updater import Injector, TransferResult, Updater, arm_faults, enter_update
+from .updater import EnterResult, Injector, TransferResult, Updater, arm_faults, enter_update
 
 BOOT_WAIT_S = 8.0          # after a reset/golden flash: covers a 3 s 'BL resume' wait + boots
+ENTER_TRIES = 3            # enter_update attempts before a trial counts as a setup failure
 
 
 @dataclass
@@ -208,6 +209,22 @@ def ensure_baseline(ctx: Ctx) -> Baseline:
 
 
 # --- resume ----------------------------------------------------------------------------
+def enter_update_retry(link: Link, noise: Injector | None = None, tries: int = ENTER_TRIES) -> EnterResult:
+    """enter_update(); when the BL booted instead of printing 'BL update' (a jump or a banner, or
+    nothing), wait for the app and try again. The last result is returned (ok or not)."""
+    er, retries = None, 0
+    for _ in range(tries):
+        er = enter_update(link, noise)
+        retries += er.retries
+        if er.ok:
+            break
+        retries += 1
+        link.note(f"enter update failed ({er.why}); waiting for the app and retrying")
+        wait_banner(link, BOOT_WAIT_S)
+    er.retries = retries
+    return er
+
+
 @dataclass
 class ResumeResult:
     verdict: Verdict | None
@@ -215,26 +232,36 @@ class ResumeResult:
     events: list[Event]
     state: FlashState | None
     transfers: list[TransferResult]
+    notes: list[str] = field(default_factory=list)
+    reentered: int = 0             # times the BL had left update mode and the host re-entered via UPD
 
 
 def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
-    """The BL waits in update/resume/nofw: finish the update and see whether YENİ follows."""
+    """The BL waits in update/resume/nofw: finish the update and see whether YENİ follows.
+    If the BL has already left update mode (its 3 s wait ran out: 'BL timeout', then it booted the
+    old app), the transfer does not start blindly: the window is classified, and an ESKİ app is
+    sent 'UPD' to enter update mode again (recorded as resume_reentered)."""
     link, t0 = ctx.link, ctx.clock.now()
     deadline = t0 + ctx.resume_limit_s
-    events, transfers = [], []
+    events, transfers, notes = [], [], []
+    reentered = 0
     in_bl = True
     for _ in range(6):
         if ctx.clock.now() >= deadline:
             break
         if not in_bl:
-            er = enter_update(link)
+            er = enter_update_retry(link)
             if not er.ok:
+                notes.append(f"resume: could not enter update mode ({er.why})")
                 break
+            reentered += 1
         link.note("resume: transfer again")
         up = Updater(link, Injector(), ctx.max_retries).transfer(new)
         transfers.append(up)
         ctx.wear.slot(new.slot, up.erases)
-        start = up.reset_index if up.status == "reset" else link.cursor
+        if up.status == "left":
+            notes.append(f"resume: {up.notes[-1]}")
+        start = up.reset_index if up.status in ("reset", "left") else link.cursor
         if up.status in ("err", "failed"):
             start = link.mark()
             link.command("UPD ABORT", r"^OK ABORT$", 1.0)
@@ -249,8 +276,8 @@ def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
         if v.outcome == ESKI:           # BL gave up waiting and booted the old app: update it again
             in_bl = False
             continue
-        return ResumeResult(v, ctx.clock.now() - t0, events, st, transfers)
-    return ResumeResult(None, ctx.clock.now() - t0, events, None, transfers)
+        return ResumeResult(v, ctx.clock.now() - t0, events, st, transfers, notes, reentered)
+    return ResumeResult(None, ctx.clock.now() - t0, events, None, transfers, notes, reentered)
 
 
 # --- trial -----------------------------------------------------------------------------
@@ -300,10 +327,12 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
     can_restart = not any(entries) and cut_at is None and not plan.trace
     inj = Injector(rng, plan.noise_rate, cut_at=cut_at)
     t_upd = clock.now()
+    upd_mark = link.mark()          # boot accounting covers everything from the first UPD on
     retries, restarts = 0, 0
     up: TransferResult | None = None
+    setup_failed = None
     while True:
-        er = enter_update(link, noise)
+        er = enter_update_retry(link, noise)
         retries += er.retries
         if er.status is not None:
             ctx.hooks = er.status.hooks
@@ -311,8 +340,9 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
                 raise BenchError("wrong_firmware", f"BL reports design={er.status.design}, run wants {ctx.design}.",
                                  [f"Flash golden_{ctx.design}.bin or pass --design {er.status.design}"])
         if not er.ok:
-            notes.append(f"host: could not enter update mode ({er.why})")
-            start = link.cursor
+            # No 'BL update' after ENTER_TRIES attempts: nothing was updated, so there is nothing to
+            # observe (an empty window would read as ÖLÜ). The trial is a setup failure.
+            setup_failed = f"could not enter update mode after {ENTER_TRIES} tries ({er.why})"
             break
         if any(entries) or plan.trace:
             err = arm_faults(link, entries, trace=plan.trace)
@@ -322,8 +352,8 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
         up = Updater(link, inj, ctx.max_retries).transfer(new)
         retries += up.retries
         ctx.wear.slot(tgt, up.erases)
-        start = up.reset_index if up.status == "reset" else link.cursor
-        gave_up = up.status == "reset" and up.left_kind in ("timeout", "jump", "banner")
+        start = up.reset_index if up.status in ("reset", "left") else link.cursor
+        gave_up = up.status == "left" or (up.status == "reset" and up.left_kind in ("timeout", "jump", "banner"))
         if can_restart and restarts < 3 and (gave_up or up.status == "failed"):
             restarts += 1
             retries += 1
@@ -347,33 +377,56 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
             link.command("UPD ABORT", r"^OK ABORT$", 1.0)
         elif up.status == "cut":
             notes.append(f"host stopped at byte {cut_at}")
+        elif up.status == "left":
+            notes.append(f"transfer: {up.notes[-1]}")
         row["bytes"] = up.bytes
         if up.transfer_s:
             row["throughput_Bps"] = round(len(new.data) / up.transfer_s, 1)
 
-    events = observe(link, start, ctx.observe_s, ctx.settle_s)
-    st = ctx.probe.read_state()
     cands = [old, new]
-    labels = st.labels(ctx.images, cands)
-    v = classify(events, labels, ex)
-    w = summarize(events)
+    resume_info: ResumeResult | None = None
+    if setup_failed:
+        notes.append(f"setup_failed: {setup_failed}")
+        events, w = [], summarize([])
+        st = ctx.probe.read_state()
+        labels = st.labels(ctx.images, cands)
+        v = Verdict(BELIRSIZ, False, [f"setup failed: {setup_failed}; no update was attempted"])
+    else:
+        events = observe(link, start, ctx.observe_s, ctx.settle_s)
+        w = summarize(events)
+        if w.wait is not None and not w.jumps and not w.banners:
+            # SPEC 7 rule 3 with nothing for rule 1 to check: resume at once. The BL waits only 3 s
+            # in update/resume, and the ST-Link read may take longer; it is done after the resume.
+            resume_info = do_resume(ctx, old, new, ex)
+        st = (resume_info.state if resume_info is not None and resume_info.state is not None
+              else ctx.probe.read_state())
+        labels = st.labels(ctx.images, cands)
+        v = classify(events, labels, ex)
     all_events = list(events)
 
-    resume_info = None
     if v.outcome == BEKLIYOR:
-        rr = do_resume(ctx, old, new, ex)
+        rr = resume_info or do_resume(ctx, old, new, ex)
         all_events += rr.events
         within = rr.seconds <= ctx.resume_limit_s
         v = combine_resume(v, rr.verdict, within)
         row["resume_ok"] = v.resume_ok
         row["resume_s"] = round(rr.seconds, 3)
         retries += sum(t.retries for t in rr.transfers)
+        notes += rr.notes
+        if rr.reentered:
+            notes.append(f"resume_reentered={rr.reentered}")
         if rr.state is not None:
             st = rr.state
             labels = st.labels(ctx.images, cands)
         resume_info = rr
         if v.running is not None:
             w = summarize(rr.events)
+
+    # SPEC 7: boots the trial cannot explain (an unexpected reset) are never accepted
+    bc = count_boots(link.events[upd_mark:])
+    if bc.unexpected:
+        notes.append(f"unexpected_reset={bc.unexpected}")
+        v = check_boots(v, bc)
 
     facts = {"outcome": v.outcome, "accepted": v.accepted, "err_code": row.get("err_code"),
              "expect_err": plan.expect_err, "trial_jumps": w.trial_jumps, "rollbacks": w.rollbacks}
@@ -400,6 +453,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
     if plan.test == "rollback":
         notes.append(f"trial_jumps={w.trial_jumps}")
 
+    trial_events = link.events[mark0:]
     # recovery
     if v.outcome in (OLU, YANLIS, BELIRSIZ) or (v.outcome == BEKLIYOR and not v.accepted):
         rec = recover(ctx)
@@ -415,8 +469,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
             ctx.link.command("FAULT TRACE OFF", r"^(OK FAULT TRACE|ERR)", 1.0)
 
     rec_meta = st.meta() if ctx.design == "ab" else None
-    trial_events = link.events[mark0:]
-    fired = sum(e.data[0] for e in trial_events if e.kind == "fired")
+    fired = sum(e.data[0] for e in link.events[upd_mark:] if e.kind == "fired")
     ctx.wear.trial()
     ctx.wear.save()
     row.update(

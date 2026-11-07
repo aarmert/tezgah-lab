@@ -12,23 +12,28 @@ from stress.csvlog import COLUMNS, read_rows
 
 TMP = None
 CFG = None
+CFG_SLOW = None
 
 
 def setUpModule():
-    global TMP, CFG
+    global TMP, CFG, CFG_SLOW
     TMP = Path(tempfile.mkdtemp(prefix="stress_test_"))
     CFG = TMP / "stress.toml"
     CFG.write_text(f'[stress]\nsalt = "t"\nruns_dir = "{(TMP / "runs").as_posix()}"\n', encoding="utf-8")
+    # An ST-Link read slower than the BL's 3 s resume wait (finding: resume race)
+    CFG_SLOW = TMP / "stress_slow.toml"
+    CFG_SLOW.write_text(f'[stress]\nsalt = "t"\nruns_dir = "{(TMP / "runs_slow").as_posix()}"\n'
+                        '[sim]\nstlink_read_s = 3.5\n', encoding="utf-8")
 
 
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 
 
-def cli(*args) -> dict:
+def cli(*args, cfg=None) -> dict:
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        main(["--json", "--stress-config", str(CFG), *args])
+        main(["--json", "--stress-config", str(cfg or CFG), *args])
     return json.loads(out.getvalue())
 
 
@@ -60,11 +65,25 @@ class SimRuns(unittest.TestCase):
         self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
         self.assertGreater(sum(int(x["retries"]) for x in rows), 0)
 
+    def test_line_noise_high_rate(self):
+        _, rows = self.run_ok("line_noise", "--n", "10", "--rate", "0.3")
+        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+
+    def test_slow_stlink_resume_race(self):
+        """The ST-Link read (3.5 s) outlasts the BL's resume wait (3 s): the host must resume first."""
+        r = cli("run", "reset_random", "--n", "12", "--sim", cfg=CFG_SLOW)
+        self.assertTrue(r["ok"], r)
+        rows = rows_of(r)
+        self.assertTrue(all(x["accepted"] == "1" for x in rows), [x["note"] for x in rows])
+        self.assertNotIn("ÖLÜ", {x["outcome"] for x in rows})
+        self.assertGreater(sum(x["outcome"] == "BEKLİYOR" for x in rows), 0)
+
     def test_reset_tests_ab_all_accepted(self):
         for test, n in (("reset_random", "12"), ("reset_sweep", "30"), ("double_fault", "12")):
             _, rows = self.run_ok(test, "--n", n)
             self.assertTrue(all(x["accepted"] == "1" for x in rows), test)
             self.assertGreater(sum(int(x["fault_fired"] or 0) for x in rows), 0, test)
+            self.assertFalse(any("unexpected_reset" in x["note"] for x in rows), test)
 
     def test_bad_image_codes(self):
         _, rows = self.run_ok("bad_image", "--n", "5")
@@ -77,6 +96,7 @@ class SimRuns(unittest.TestCase):
         _, rows = self.run_ok("rollback", "--n", "3")
         self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
         self.assertTrue(all("rollback_s=" in x["note"] for x in rows))
+        self.assertEqual({x["attempts"] for x in rows}, {"3"})      # ROLLBACK keeps the attempts
 
     def test_naive_control_sees_failures(self):
         r = cli("run", "naive_control", "--n", "10", "--sim")
