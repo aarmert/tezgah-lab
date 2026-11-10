@@ -1,31 +1,105 @@
 # tezgah
 
-A tool that flashes and resets an STM32F4 Discovery board from a computer, talks to it over a serial
-port, watches its LEDs with an Android phone camera, and runs test plans. You and Claude (with `--json`)
-can both use it. It runs the same way on Linux and Windows.
+*Tezgah* is Turkish for workbench. This repo is a hardware-in-the-loop test bench for STM32 boards
+that a person or a coding agent can drive from the command line. It flashes and resets the board,
+talks to it over a serial port, watches its LEDs through an Android phone camera, and runs test plans.
+Every command takes `--json` and returns a machine-readable verdict.
 
-## Contents
+It holds two benches:
 
-| File | Purpose |
+- **F407 bench** (`bench.py`): functional tests for an STM32F407G-DISC1. Test plans are TOML files, and
+  the tool recovers the board by itself when a test leaves it hung or crashed.
+- **Bootloader stress test** (`python -m stress`): an A/B bootloader for the NUCLEO-C031C6 that is
+  reset at thousands of chosen moments during a firmware update. An ESP32-S3 pulls the reset line with
+  microsecond timing. A deliberately unsafe bootloader is tested the same way as a control.
+
+<p align="center">
+  <img src="docs/egitim/foto/genel.jpg" width="360"
+       alt="The C031 bench: an ESP32-S3 wired to a NUCLEO-C031C6 with four jumper wires">
+</p>
+<p align="center"><em>The C031 bench: the ESP32-S3 bridge (top) and the NUCLEO-C031C6.</em></p>
+
+## Results so far
+
+| Bench | Result |
 |---|---|
-| `bench.py` | The main tool: flash, reset, send and read over serial, run test plans, recover |
-| `bench.example.toml` | Config template (copy it to `bench.toml`) |
-| `plans/smoke.toml` | Basic test: flash, boot message, PING/VER/TICK/UID/LED |
-| `plans/crash_recovery.toml` | Crashes the board on purpose, reads the report, brings it back with a reset |
-| `plans/measure.toml` | Internal measurements: VDD (VREFINT), chip temperature, board clock to PC clock ratio |
-| `plans/camera_blink.toml` | Uses the phone camera to measure the green LED's frequency (BLINK 1/2/4) and check that it stays lit with LED G ON |
-| `firmware/` | The small test firmware that runs on the board, and `build.py` (no make needed) |
-| `camera/` | The phone camera tool (Bun + TypeScript, scrcpy). Details: [`camera/README.md`](camera/README.md) |
-| `.opencode/plugins/android-camera/` | The `android_take_photo` tool for OpenCode |
-| `docs/raporlar/` | Trial reports |
-| `stress/`, `docs/stress/` | Bootloader stress test: host tool ([`stress/README.md`](stress/README.md)), specs and the results deck (`docs/stress/sunum.html`) |
-| `firmware/boot_c0/`, `firmware/boot/` | Stress-test bootloaders and apps for the NUCLEO-C031C6 and the F407 |
-| `esp32/bridge/` | ESP32-S3 line bridge with a timed NRST for the C031 bench |
-| `docs/egitim/` | Turkish training booklet on the stress-test system (`tezgah-egitim.pdf`) |
-| `setup_ubuntu.sh` | Script that installs everything on Ubuntu |
-| `AGENTS.md` | Rules agents follow in this folder (`CLAUDE.md` imports it) |
+| NUCLEO-C031C6, A/B bootloader | 0 failures in 3103 updates that were reset mid-update (2026-11-07). The failure rate is below 0.096% with 95% confidence. |
+| NUCLEO-C031C6, naive bootloader (control) | 11 of 20 reset-injected updates booted a corrupt image, as the control is meant to show |
+| F407 Discovery | `smoke`, `crash_recovery`, `measure` and `camera_blink` pass on the real board, each with its negative check (2026-10-28) |
 
-## Wiring
+The F407 port of the stress test (`firmware/boot/`) has only run in the simulator so far. The full
+numbers are in [`stress/README.md`](stress/README.md), and the slide deck is `docs/stress/sunum.html`
+(Turkish).
+
+## Try it without hardware
+
+You need Python 3.12 or newer. Nothing else is required for these commands.
+
+```bash
+git clone <repo-url> tezgah && cd tezgah
+
+# Stress test against the simulator: bootloader, flash and reset behaviour are all modelled
+python3 -m stress --json plan reset_sweep --seed 1 --sim    # the list of faults to inject
+python3 -m stress --json run reset_sweep --seed 1 --sim     # run them
+
+# Host-side unit tests
+python3 -m unittest discover -s stress/tests
+python3 -m unittest discover -s firmware/boot/tests
+python3 -m unittest discover -s firmware/boot_c0/tests
+```
+
+`bench.py` also takes `--sim`. It needs a `bench.toml` first (`cp bench.example.toml bench.toml`).
+
+## What is in the repo
+
+| Path | Purpose |
+|---|---|
+| `bench.py` | The F407 bench tool: flash, reset, send and read over serial, run test plans, recover |
+| `bench.example.toml`, `bench-c031.example.toml`, `stress.example.toml` | Config templates. Copy each one without `.example`; the copies are gitignored. |
+| `plans/` | Test plans: `smoke`, `crash_recovery`, `measure`, `camera_blink` |
+| `firmware/` | The F407 test firmware (`main.c`) and `build.py`. Bare metal, no HAL, no make. |
+| `firmware/boot_c0/`, `firmware/boot/` | Stress-test bootloaders and apps for the C031 and the F407 ([C031](firmware/boot_c0/README.md), [F407](firmware/boot/README.md)) |
+| `firmware/wiretest_c031/` | A small wiring check for the C031 bench. Not part of the stress system. |
+| `stress/` | The stress-test host tool and its simulator ([`stress/README.md`](stress/README.md)) |
+| `esp32/bridge/` | ESP32-S3 serial bridge with a timed NRST pulse ([README](esp32/bridge/README.md)) |
+| `camera/` | The phone camera tool: Bun, TypeScript, scrcpy ([`camera/README.md`](camera/README.md)) |
+| `.opencode/plugins/android-camera/` | The `android_take_photo` tool for OpenCode |
+| `docs/stress/` | The stress-test specs: [`SPEC.md`](docs/stress/SPEC.md), [`SPEC-C031C6.md`](docs/stress/SPEC-C031C6.md), [`SPEC-ESP32.md`](docs/stress/SPEC-ESP32.md) |
+| `docs/egitim/` | Training booklet and the 3000-trial report (Turkish PDFs, with their generators) |
+| `setup_ubuntu.sh` | Installs the F407 bench's dependencies on Ubuntu |
+| `AGENTS.md` | The rules a coding agent follows in this folder (`CLAUDE.md` imports it) |
+
+### Language
+
+The READMEs, the specs and the stress tool are in English. `bench.py` prints its help and messages in
+Turkish, and the booklet, the report and the slide deck are Turkish. The stress tool's outcome names
+are Turkish too:
+
+| Outcome | Meaning |
+|---|---|
+| `YENİ` | The new image runs |
+| `ESKİ` | The old image still runs |
+| `BEKLİYOR` | The bootloader waits for the update to resume |
+| `ÖLÜ` | Nothing boots |
+| `YANLIŞ` | A corrupt image was started |
+| `BELİRSİZ` | Unclear |
+
+The first three are accepted. `BEKLİYOR` counts only if the resumed update then succeeds.
+
+## Requirements
+
+| For | You need |
+|---|---|
+| Everything | Python 3.11+ (3.12+ for `stress`), `pyserial` |
+| Flashing and debugging | OpenOCD, or STM32CubeProgrammer (`bench.py` only). The C031 needs an OpenOCD build newer than 0.12.0, which has no `stm32c0x.cfg`. |
+| Building firmware | `arm-none-eabi-gcc` |
+| Camera steps | `adb`, scrcpy 2.5+, `ffmpeg`, [Bun](https://bun.sh), `python3-opencv`, `python3-numpy`, and an Android 12+ phone with USB debugging |
+| ESP32 bridge | `arduino-cli` with the esp32 core |
+| `report --plot` | matplotlib (optional) |
+
+## The F407 bench
+
+### Wiring
 
 ```
 Discovery mini-USB (ST-Link)  ->  computer USB   (flashing and reset)
@@ -40,13 +114,10 @@ USB-TTL (3.3V)                    Discovery
 Make sure the USB-TTL adapter is in 3.3V mode. If it has a jumper, set it to 3V3.
 The CN3 jumpers on the Discovery must be fitted (ST-Link connected to the board).
 
-## Ubuntu setup
+### Ubuntu setup
 
 ```bash
-# Copy from Windows to the server (use your own user name and IP)
-scp tezgah.zip user@server-ip:~
-ssh user@server-ip
-sudo apt install -y unzip && unzip tezgah.zip && cd tezgah
+git clone <repo-url> tezgah && cd tezgah
 bash setup_ubuntu.sh
 # log out and back in, then:
 python3 bench.py ports        # find the USB-TTL's name and write it to bench.toml
@@ -55,10 +126,23 @@ python3 bench.py run smoke
 python3 bench.py run crash_recovery
 ```
 
+Read `setup_ubuntu.sh` before you run it. Besides installing packages with `sudo` and adding you to the
+`dialout` and `plugdev` groups, it stops the machine from suspending (it masks the sleep targets and
+ignores the lid switch). That suits a dedicated bench computer and probably not your laptop. It does
+not install the camera tools.
+
 Use the `/dev/serial/by-id/...` name from the `bench.py ports` output. After a reboot, `/dev/ttyUSB0`
 can point to a different device. The by-id name stays the same.
 
-## Commands
+### Windows setup
+
+1. Install Python 3.11+ from python.org (with "Add to PATH" checked).
+2. `py -m pip install pyserial`
+3. Install STM32CubeProgrammer (it includes the ST-Link driver). For the compiler, install STM32CubeCLT or the Arm GNU Toolchain.
+4. Copy `bench.example.toml` to `bench.toml`. Set `backend = "cubeprog"` and `port = "COM5"` (find the port in Device Manager or with `py bench.py ports`).
+5. `py firmware\build.py`, `py bench.py doctor`, `py bench.py run smoke`
+
+### Commands
 
 | Command | What it does |
 |---|---|
@@ -79,7 +163,8 @@ can point to a different device. The by-id name stays the same.
 | `python3 bench.py mem 0x40020C14 --count 4` | Reads memory or peripheral registers (read only, the option byte region is blocked) |
 | `python3 bench.py gdbserver` | Starts a GDB server (for humans, Ctrl+C to stop; `sudo apt install gdb-multiarch`) |
 
-For now, `halt-dump`, `mem`, and `gdbserver` work only with `backend = "openocd"`.
+`halt-dump`, `mem`, and `gdbserver` work only with `backend = "openocd"`, and `halt-dump` and `mem`
+have F407 constants, so they give wrong results on the C031.
 Reading some peripheral registers has side effects. For example, reading the USART `DR` consumes the received character.
 
 Add `--json` to any command to get the result as JSON (`ok`, `error_type`,
@@ -90,27 +175,7 @@ and a timestamped `serial.log`. If a test fails, the tool tries to recover the b
 the board first, and if that does not work, it flashes the known-good firmware again.
 If the board crashes, the tool maps the address in the HARDFAULT line to a function and line in the source code.
 
-## Production station (`station`)
-
-```bash
-python3 bench.py station                              # asks for the operator, waits for Enter on each board, q to quit
-python3 bench.py station --plans smoke,measure,camera_blink
-python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # for testing and automation
-```
-
-- For each board, the plans run in order. The station stops at the first failing plan and shows the result as a large PASS/FAIL.
-- For each board, the station writes a `station-card` line to the audit log (`runs/audit.jsonl`). The hash
-  of that line goes into the header of every report for that board. The header also has the operator, UID,
-  firmware SHA-256, bench.py and OpenOCD versions, host name, and start and end times.
-- `runs/station_<date>.csv` has one row per board. The columns are zaman (time), kart_no (board number),
-  operator, uid, firmware_sha256, sonuc (result), basarisiz_adim (failed step), rapor_klasoru (report folder),
-  tekrar (repeat), and denetim_hash (audit hash).
-- If the same UID has been tested before, the screen shows `!!! BU KART DAHA ÖNCE TEST EDİLDİ` ("this board
-  was tested before") and the CSV's `tekrar` column is filled in. The check covers all `station_*.csv` files.
-- Runs with `--sim` go to `station_<date>_sim.csv`, so they never mix with the real log.
-- While the station is open, it holds the bench lock. Other bench.py commands wait until it closes.
-
-## Writing a test plan
+### Writing a test plan
 
 ```toml
 name = "example"
@@ -147,8 +212,13 @@ seconds = 5
 range = [0.97, 1.03]        # board time / PC time (time.monotonic) must be in this range
 ```
 
+Patterns are regular expressions. Use single quotes in TOML so you don't need to escape backslashes.
+
 `clock_check` writes the ratio, both durations, and the uncertainty of the PC measurement (half the TICK
 round trip). If the last expectation step is a `clock_check`, `--verify-can-fail` breaks its range.
+
+Every new plan should pass `--verify-can-fail`. A test that does not fail when the expectation is
+deliberately broken proves nothing.
 
 ### Measuring an LED with the camera (`cam_blink`)
 
@@ -178,12 +248,29 @@ steady = "on"               # or "off"
   Frequencies above half the frame rate alias, so they look lower than they are.
 - Each step writes `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (region marked, other candidates as yellow
   circles), and `cam_stepNN.csv` (time, brightness) to the report folder.
-- It needs OpenCV and NumPy: `sudo apt install python3-opencv python3-numpy`. The camera tool needs
-  adb, scrcpy 2.5+, ffmpeg, and [Bun](https://bun.sh). Run `bun install` once in the root. With `--sim`, the tool uses a synthetic video.
+- Run `bun install` once in the repo root. With `--sim`, the tool uses a synthetic video.
 
-Patterns are regular expressions. Use single quotes in TOML so you don't need to escape backslashes.
+### Production station (`station`)
 
-## Test firmware commands
+```bash
+python3 bench.py station                              # asks for the operator, waits for Enter on each board, q to quit
+python3 bench.py station --plans smoke,measure,camera_blink
+python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # for testing and automation
+```
+
+- For each board, the plans run in order. The station stops at the first failing plan and shows the result as a large PASS/FAIL.
+- For each board, the station writes a `station-card` line to the audit log (`runs/audit.jsonl`). The hash
+  of that line goes into the header of every report for that board. The header also has the operator, UID,
+  firmware SHA-256, bench.py and OpenOCD versions, host name, and start and end times.
+- `runs/station_<date>.csv` has one row per board. The columns are zaman (time), kart_no (board number),
+  operator, uid, firmware_sha256, sonuc (result), basarisiz_adim (failed step), rapor_klasoru (report folder),
+  tekrar (repeat), and denetim_hash (audit hash).
+- If the same UID has been tested before, the screen shows `!!! BU KART DAHA ÖNCE TEST EDİLDİ` ("this board
+  was tested before") and the CSV's `tekrar` column is filled in. The check covers all `station_*.csv` files.
+- Runs with `--sim` go to `station_<date>_sim.csv`, so they never mix with the real log.
+- While the station is open, it holds the bench lock. Other bench.py commands wait until it closes.
+
+### Test firmware commands
 
 `PING`, `VER`, `TICK`, `UID`, `VDD` (supply voltage in mV), `TEMP` (chip temperature in °C, 0.1 resolution),
 `LED <G|O|R|B> <ON|OFF>`, `BLINK <1-20>`
@@ -195,28 +282,7 @@ The firmware targets the STM32F407G-DISC1 and STM32F411E-DISCO (LEDs on PD12-PD1
 only on the F407, because the F411's temperature sensor is on ADC channel 18, not 16.
 The clock is the internal 16 MHz HSI, with no PLL setup.
 
-## Using it with an agent (Claude, OpenCode)
-
-Start `claude` or `opencode` in this folder. The rules are in `AGENTS.md`, and Claude reads it through
-`CLAUDE.md`. The agent touches the board only through `bench.py`, cannot change the test files, and does not touch option bytes.
-
-To make sure Claude cannot change the tests:
-
-```bash
-chmod -R a-w plans bench.toml bench.py
-```
-
-and set `plans_dir_only = true` in `bench.toml`.
-
-## On Windows
-
-1. Install Python 3.11+ from python.org (with "Add to PATH" checked).
-2. `py -m pip install pyserial`
-3. Install STM32CubeProgrammer (it includes the ST-Link driver). For the compiler, install STM32CubeCLT or the Arm GNU Toolchain.
-4. In `bench.toml`, set `backend = "cubeprog"` and `port = "COM5"` (find the port in Device Manager or with `py bench.py ports`).
-5. `py firmware\build.py`, `py bench.py doctor`, `py bench.py run smoke`
-
-## Common errors
+### Common errors
 
 | Error | Fix |
 |---|---|
@@ -226,10 +292,77 @@ and set `plans_dir_only = true` in `bench.toml`.
 | `expect_timeout` with no lines at all | TX/RX swapped, GND not connected, or the USB-TTL is in 5V mode |
 | Garbled characters | Baud rate mismatch (it must be 115200) |
 
-## Status
+## The bootloader stress test
 
-- **F407 Discovery bench** (this README): on 2026-10-28 the real board passed `smoke`, `crash_recovery`,
-  `measure` and `camera_blink`, each with its `--verify-can-fail` negative check (`docs/raporlar/`).
-- **Bootloader stress test, NUCLEO-C031C6 + ESP32-S3 bench**: running on the real board since 2026-11-07
-  (`stress/README.md`, results in `docs/stress/sunum.html`). The F407 port of the stress test
-  (`firmware/boot`) has only run in the simulator so far.
+The question it answers: if power fails or the board resets at any moment of a firmware update, does
+the board still boot a correct image?
+
+- **The bootloader under test** keeps two slots, A and B. A new image goes to the inactive slot and boots
+  as a trial. The app must confirm itself within about a second, otherwise the watchdog resets it and
+  after three attempts the bootloader rolls back. An append-only log in flash records each step, and
+  every image is checked with CRC32 on every boot.
+- **The control** is a naive bootloader that overwrites the only slot in place. The same tests must
+  show it failing, which proves the tests can detect a failure.
+- **Fault injection** has two sources. A hook in the test builds resets the chip from a timer at a
+  chosen phase and delay. The ESP32-S3 pulls NRST from outside, a set number of microseconds after
+  the last byte of a chosen line (measured 2 to 15 µs late).
+- **The verdict** does not trust the board. After each trial the host reads both slots and the log
+  back over SWD and classifies the outcome from the flash contents and the serial lines.
+
+### Wiring (C031 bench)
+
+```
+PC USB ── NUCLEO-C031C6 ST-LINK/V2-1     SWD + virtual COM port (USART2 PA2/PA3, 115200)
+PC USB ── ESP32-S3 UART connector        CH343, 921600
+
+ESP32 GPIO17 ──────────────────►  PA10 (USART1 RX)
+ESP32 GPIO18 ◄──────────────────  PA9  (USART1 TX)
+ESP32 GPIO4 (open-drain) ──────►  NRST
+GND ────────────────────────────  GND
+3V3 and 5V are not connected between the boards.
+```
+
+### Running it
+
+```bash
+cp stress.example.toml stress.toml                 # then fill in the ports
+cp bench-c031.example.toml bench-c031.toml
+python3 firmware/boot_c0/build_boot.py --json      # bootloaders, apps, images
+python3 esp32/build.py --json                      # compile the bridge, then upload it yourself
+
+python3 -m stress --json doctor --target c031
+python3 -m stress --json calibrate --target c031
+python3 -m stress --json run basic --target c031 --n 20
+python3 -m stress --json run reset_sweep --target c031 --reset-source esp
+python3 -m stress --json report stress_runs/<run-folder> --plot
+```
+
+The tests are `basic`, `transfer_cut`, `line_noise`, `reset_random`, `reset_sweep`, `double_fault`,
+`bad_image`, `rollback` and `naive_control`. [`stress/README.md`](stress/README.md) describes each one,
+how a trial runs, how outcomes are classified and how to read the results.
+
+## Using it with an agent (Claude Code, OpenCode)
+
+Start `claude` or `opencode` in this folder. The rules are in `AGENTS.md`, and Claude reads it through
+`CLAUDE.md`. The agent touches the board only through `bench.py` and `python -m stress`, cannot change the
+test files, and does not touch option bytes. `AGENTS.md` names one bench's phone by its adb serial; put
+your own there.
+
+To make sure the agent cannot change the tests:
+
+```bash
+chmod -R a-w plans bench.toml bench.py
+```
+
+and set `plans_dir_only = true` in `bench.toml`.
+
+## Development
+
+```bash
+python3 -m unittest discover -s stress/tests             # 139 tests
+python3 -m unittest discover -s firmware/boot/tests      # 30 tests
+python3 -m unittest discover -s firmware/boot_c0/tests   # 42 tests
+bun install && bun run test && bun run typecheck         # camera tool, 19 tests
+```
+
+None of these need hardware. The camera tests use fake `adb` and `scrcpy`.
