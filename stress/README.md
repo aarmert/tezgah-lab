@@ -200,7 +200,7 @@ rollback 2/2 OLD; reset_random 20/20 with the hook and 20/20 with `--reset-sourc
 naive_control (esp) 11/20 WRONG. Then two 2-hour sweeps (stopped with Ctrl-C after 2 h):
 `reset_sweep --seed 2026 --max-points-per-phase 800` (hook, 8 phases) 1493/1493 and the same with
 `--seed 2027 --reset-source esp` (3 phases) 1479/1479. In total 0 failures in 3103 reset-injected A/B
-trials: failure rate < 0.096% with 95% confidence. No ST-Link recovery and no unexpected reset on A/B;
+trials: failure rate < 0.097% with 95% confidence. No ST-Link recovery and no unexpected reset on A/B;
 9 `witness_mismatch` notes, all BOOT faults that cut the status line mid-character (the two UARTs keep
 a different broken last byte; harmless). A normal trial takes 4.4-6 s; ESP NRST pulses were 2-15 µs
 late (median 7 µs).
