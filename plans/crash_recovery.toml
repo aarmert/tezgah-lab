@@ -1,33 +1,33 @@
-# Çökme ve kurtarma testi: tezgahın kendisini sınar.
-# Firmware bilerek HardFault'a düşer; tezgah çökme raporunu okumalı,
-# kartın sustuğunu görmeli ve reset ile kartı geri getirebilmeli.
+# Crash and recovery test: tests the bench itself.
+# The firmware triggers a HardFault on purpose; the bench must read the crash report,
+# see that the board went silent, and bring it back with a reset.
 name = "crash_recovery"
-description = "Bilerek HardFault oluştur, raporun geldiğini ve resetle kartın kurtulduğunu doğrula."
+description = "Trigger a HardFault on purpose, check that the report arrives and that a reset recovers the board."
 firmware = "firmware/build/stm32bench-fw.elf"
 
 [[step]]
 action = "flash"
 
 [[step]]
-name = "yükleme sonrası açılış"
+name = "boot after flashing"
 action = "expect"
 pattern = '^BOOT '
 timeout = 3
 
 [[step]]
-name = "çökme raporu"
+name = "crash report"
 action = "send"
 text = "CRASH"
 expect = '^HARDFAULT pc=0x[0-9A-F]{8} lr=0x[0-9A-F]{8} cfsr=0x00010000'
 timeout = 1
 
 [[step]]
-name = "çöktükten sonra komut"
+name = "command after the crash"
 action = "send"
 text = "PING"
 
 [[step]]
-name = "kart susmalı"
+name = "board must be silent"
 action = "silence"
 seconds = 1
 
@@ -35,13 +35,13 @@ seconds = 1
 action = "reset"
 
 [[step]]
-name = "resetten sonra açılış"
+name = "boot after reset"
 action = "expect"
 pattern = '^BOOT '
 timeout = 3
 
 [[step]]
-name = "kart tekrar cevap veriyor"
+name = "board responds again"
 action = "send"
 text = "PING"
 expect = '^PONG$'

@@ -33,19 +33,20 @@ numbers are in [`stress/README.md`](stress/README.md), and the slide deck is `do
 
 ## Try it without hardware
 
-You need Python 3.12 or newer. Nothing else is required for these commands.
+You need [uv](https://docs.astral.sh/uv/). It fetches the right Python and the packages on the first
+`uv run`. Nothing else is required for these commands.
 
 ```bash
 git clone <repo-url> tezgah && cd tezgah
 
 # Stress test against the simulator: bootloader, flash and reset behaviour are all modelled
-python3 -m stress --json plan reset_sweep --seed 1 --sim    # the list of faults to inject
-python3 -m stress --json run reset_sweep --seed 1 --sim     # run them
+uv run python -m stress --json plan reset_sweep --seed 1 --sim    # the list of faults to inject
+uv run python -m stress --json run reset_sweep --seed 1 --sim     # run them
 
 # Host-side unit tests
-python3 -m unittest discover -s stress/tests
-python3 -m unittest discover -s firmware/boot/tests
-python3 -m unittest discover -s firmware/boot_c0/tests
+uv run python -m unittest discover -s stress/tests
+uv run python -m unittest discover -s firmware/boot/tests
+uv run python -m unittest discover -s firmware/boot_c0/tests
 ```
 
 `bench.py` also takes `--sim`. It needs a `bench.toml` first (`cp bench.example.toml bench.toml`).
@@ -71,31 +72,37 @@ python3 -m unittest discover -s firmware/boot_c0/tests
 
 ### Language
 
-The READMEs, the specs and the stress tool are in English. `bench.py` prints its help and messages in
-Turkish, and the booklet, the report and the slide deck are Turkish. The stress tool's outcome names
-are Turkish too:
+The code, the READMEs, the specs and the tools' output are in English. The training booklet, the
+3000-trial report and the slide deck are Turkish. The stress tool classifies each trial as one of:
 
 | Outcome | Meaning |
 |---|---|
-| `YENİ` | The new image runs |
-| `ESKİ` | The old image still runs |
-| `BEKLİYOR` | The bootloader waits for the update to resume |
-| `ÖLÜ` | Nothing boots |
-| `YANLIŞ` | A corrupt image was started |
-| `BELİRSİZ` | Unclear |
+| `NEW` | The new image runs |
+| `OLD` | The old image still runs |
+| `PENDING` | The bootloader waits for the update to resume |
+| `DEAD` | Nothing boots |
+| `WRONG` | A corrupt image was started |
+| `UNCLEAR` | Unclear |
 
-The first three are accepted. `BEKLİYOR` counts only if the resumed update then succeeds.
+The first three are accepted. `PENDING` counts only if the resumed update then succeeds. Results
+written before 2026-11-10 use the Turkish names (`YENİ`, `ESKİ`, `BEKLİYOR`, `ÖLÜ`, `YANLIŞ`,
+`BELİRSİZ`); `report` still reads them and maps them to the English names.
 
 ## Requirements
 
 | For | You need |
 |---|---|
-| Everything | Python 3.11+ (3.12+ for `stress`), `pyserial` |
+| Everything | [uv](https://docs.astral.sh/uv/) (installs Python 3.14 and `pyserial`) |
 | Flashing and debugging | OpenOCD, or STM32CubeProgrammer (`bench.py` only). The C031 needs an OpenOCD build newer than 0.12.0, which has no `stm32c0x.cfg`. |
 | Building firmware | `arm-none-eabi-gcc` |
-| Camera steps | `adb`, scrcpy 2.5+, `ffmpeg`, [Bun](https://bun.sh), `python3-opencv`, `python3-numpy`, and an Android 12+ phone with USB debugging |
+| Camera steps | `adb`, scrcpy 2.5+, `ffmpeg`, [Bun](https://bun.sh), the `camera` group (opencv, numpy; `uv sync` installs it), and an Android 12+ phone with USB debugging |
 | ESP32 bridge | `arduino-cli` with the esp32 core |
-| `report --plot` | matplotlib (optional) |
+| `report --plot` | matplotlib (the `plot` group) |
+
+The Python packages are declared in `pyproject.toml` and pinned in `uv.lock`. With
+[uv](https://docs.astral.sh/uv/), `uv sync` creates `.venv` with all of them (pyserial, plus the
+`camera`, `plot`, `docs`, `esp32`, and `dev` groups). After that, run `uv run python bench.py ...` or
+`uv run python -m stress ...`. Lint with `uv run ruff check .`.
 
 ## The F407 bench
 
@@ -120,11 +127,15 @@ The CN3 jumpers on the Discovery must be fitted (ST-Link connected to the board)
 git clone <repo-url> tezgah && cd tezgah
 bash setup_ubuntu.sh
 # log out and back in, then:
-python3 bench.py ports        # find the USB-TTL's name and write it to bench.toml
-python3 bench.py doctor
-python3 bench.py run smoke
-python3 bench.py run crash_recovery
+uv run bench.py ports        # find the USB-TTL's name and write it to bench.toml
+uv run bench.py doctor
+uv run bench.py run smoke
+uv run bench.py run crash_recovery
 ```
+
+The script installs [uv](https://docs.astral.sh/uv/) (unless it's already installed) and runs
+`uv sync --locked`. uv uses the Python version in `.python-version`, downloading it if the system
+doesn't have it, and installs the packages at the versions in `uv.lock` into `.venv`.
 
 Read `setup_ubuntu.sh` before you run it. Besides installing packages with `sudo` and adding you to the
 `dialout` and `plugdev` groups, it stops the machine from suspending (it masks the sleep targets and
@@ -146,22 +157,22 @@ can point to a different device. The by-id name stays the same.
 
 | Command | What it does |
 |---|---|
-| `python3 bench.py doctor` | Checks the tools, the ST-Link, and the serial port |
-| `python3 bench.py ports` | Lists serial ports |
-| `python3 bench.py flash file.elf` | Flashes and verifies |
-| `python3 bench.py reset --expect "^BOOT"` | Resets and waits for the boot message |
-| `python3 bench.py send PING --expect "^PONG$"` | Sends a command and checks the reply |
-| `python3 bench.py send TICK --expect "^TICK (\d+)$" --min 1 --max 100000` | Checks a numeric range |
-| `python3 bench.py read --seconds 3` | Reads from the serial port |
-| `python3 bench.py monitor` | Live serial monitor (Ctrl+C to quit) |
-| `python3 bench.py run smoke` | Runs the `plans/smoke.toml` plan |
-| `python3 bench.py run smoke --verify-can-fail` | Also runs a deliberately broken copy of the plan, which must FAIL |
-| `python3 bench.py recover` | Recovers the board by flashing the known-good firmware under reset |
-| `python3 bench.py audit` | Checks that nobody has altered the audit log |
-| `python3 bench.py station` | Production station: asks for the operator name, runs smoke+measure on each board, shows a large PASS/FAIL, `q` to quit |
-| `python3 bench.py halt-dump` | Halts the core, shows the registers, the fault registers with descriptions, and the pc and stack at the crash, then resumes |
-| `python3 bench.py mem 0x40020C14 --count 4` | Reads memory or peripheral registers (read only, the option byte region is blocked) |
-| `python3 bench.py gdbserver` | Starts a GDB server (for humans, Ctrl+C to stop; `sudo apt install gdb-multiarch`) |
+| `uv run bench.py doctor` | Checks the tools, the ST-Link, and the serial port |
+| `uv run bench.py ports` | Lists serial ports |
+| `uv run bench.py flash file.elf` | Flashes and verifies |
+| `uv run bench.py reset --expect "^BOOT"` | Resets and waits for the boot message |
+| `uv run bench.py send PING --expect "^PONG$"` | Sends a command and checks the reply |
+| `uv run bench.py send TICK --expect "^TICK (\d+)$" --min 1 --max 100000` | Checks a numeric range |
+| `uv run bench.py read --seconds 3` | Reads from the serial port |
+| `uv run bench.py monitor` | Live serial monitor (Ctrl+C to quit) |
+| `uv run bench.py run smoke` | Runs the `plans/smoke.toml` plan |
+| `uv run bench.py run smoke --verify-can-fail` | Also runs a deliberately broken copy of the plan, which must FAIL |
+| `uv run bench.py recover` | Recovers the board by flashing the known-good firmware under reset |
+| `uv run bench.py audit` | Checks that nobody has altered the audit log |
+| `uv run bench.py station` | Production station: asks for the operator name, runs smoke+measure on each board, shows a large PASS/FAIL, `q` to quit |
+| `uv run bench.py halt-dump` | Halts the core, shows the registers, the fault registers with descriptions, and the pc and stack at the crash, then resumes |
+| `uv run bench.py mem 0x40020C14 --count 4` | Reads memory or peripheral registers (read only, the option byte region is blocked) |
+| `uv run bench.py gdbserver` | Starts a GDB server (for humans, Ctrl+C to stop; `sudo apt install gdb-multiarch`) |
 
 `halt-dump`, `mem`, and `gdbserver` work only with `backend = "openocd"`, and `halt-dump` and `mem`
 have F407 constants, so they give wrong results on the C031.
@@ -244,7 +255,7 @@ steady = "on"               # or "off"
 - The verdict is numeric. The threshold is the midpoint between the 5th and 95th brightness percentiles, transitions
   use hysteresis, and the tool finds each transition time by linear interpolation between two frames.
   It computes the frequency from both rising and falling edges.
-- If the measured frequency is above a quarter of the frame rate, the message starts with `UYARI:` ("warning").
+- If the measured frequency is above a quarter of the frame rate, the message starts with `WARNING:`.
   Frequencies above half the frame rate alias, so they look lower than they are.
 - Each step writes `cam_stepNN.mp4`, `cam_stepNN_roi.jpg` (region marked, other candidates as yellow
   circles), and `cam_stepNN.csv` (time, brightness) to the report folder.
@@ -253,20 +264,20 @@ steady = "on"               # or "off"
 ### Production station (`station`)
 
 ```bash
-python3 bench.py station                              # asks for the operator, waits for Enter on each board, q to quit
-python3 bench.py station --plans smoke,measure,camera_blink
-python3 bench.py station --rounds 3 --no-prompt --operator Ayse   # for testing and automation
+uv run bench.py station                              # asks for the operator, waits for Enter on each board, q to quit
+uv run bench.py station --plans smoke,measure,camera_blink
+uv run bench.py station --rounds 3 --no-prompt --operator Ayse   # for testing and automation
 ```
 
 - For each board, the plans run in order. The station stops at the first failing plan and shows the result as a large PASS/FAIL.
 - For each board, the station writes a `station-card` line to the audit log (`runs/audit.jsonl`). The hash
   of that line goes into the header of every report for that board. The header also has the operator, UID,
   firmware SHA-256, bench.py and OpenOCD versions, host name, and start and end times.
-- `runs/station_<date>.csv` has one row per board. The columns are zaman (time), kart_no (board number),
-  operator, uid, firmware_sha256, sonuc (result), basarisiz_adim (failed step), rapor_klasoru (report folder),
-  tekrar (repeat), and denetim_hash (audit hash).
-- If the same UID has been tested before, the screen shows `!!! BU KART DAHA ÖNCE TEST EDİLDİ` ("this board
-  was tested before") and the CSV's `tekrar` column is filled in. The check covers all `station_*.csv` files.
+- `runs/station_<date>.csv` has one row per board. The columns are `time`, `board_no`, `operator`, `uid`,
+  `firmware_sha256`, `result`, `failed_step`, `report_dirs`, `repeat`, and `audit_hash`. Files written before
+  the columns were renamed have Turkish headers; they are still read for the repeat check.
+- If the same UID has been tested before, the screen shows a `!!!` warning that the board was tested before,
+  and the CSV's `repeat` column is filled in. The check covers all `station_*.csv` files.
 - Runs with `--sim` go to `station_<date>_sim.csv`, so they never mix with the real log.
 - While the station is open, it holds the bench lock. Other bench.py commands wait until it closes.
 
@@ -287,7 +298,7 @@ The clock is the internal 16 MHz HSI, with no PLL setup.
 | Error | Fix |
 |---|---|
 | `probe_not_found` | Check the USB cable and the `plugdev` group (log out and back in), or another program is holding the ST-Link |
-| `target_not_responding` | `python3 bench.py recover` |
+| `target_not_responding` | `uv run bench.py recover` |
 | `serial_open_failed` | Wrong port name, or you are not in the `dialout` group |
 | `expect_timeout` with no lines at all | TX/RX swapped, GND not connected, or the USB-TTL is in 5V mode |
 | Garbled characters | Baud rate mismatch (it must be 115200) |
@@ -327,14 +338,14 @@ GND ─────────────────────────�
 ```bash
 cp stress.example.toml stress.toml                 # then fill in the ports
 cp bench-c031.example.toml bench-c031.toml
-python3 firmware/boot_c0/build_boot.py --json      # bootloaders, apps, images
-python3 esp32/build.py --json                      # compile the bridge, then upload it yourself
+uv run firmware/boot_c0/build_boot.py --json      # bootloaders, apps, images
+uv run esp32/build.py --json                      # compile the bridge, then upload it yourself
 
-python3 -m stress --json doctor --target c031
-python3 -m stress --json calibrate --target c031
-python3 -m stress --json run basic --target c031 --n 20
-python3 -m stress --json run reset_sweep --target c031 --reset-source esp
-python3 -m stress --json report stress_runs/<run-folder> --plot
+uv run python -m stress --json doctor --target c031
+uv run python -m stress --json calibrate --target c031
+uv run python -m stress --json run basic --target c031 --n 20
+uv run python -m stress --json run reset_sweep --target c031 --reset-source esp
+uv run python -m stress --json report stress_runs/<run-folder> --plot
 ```
 
 The tests are `basic`, `transfer_cut`, `line_noise`, `reset_random`, `reset_sweep`, `double_fault`,
@@ -359,9 +370,9 @@ and set `plans_dir_only = true` in `bench.toml`.
 ## Development
 
 ```bash
-python3 -m unittest discover -s stress/tests             # 139 tests
-python3 -m unittest discover -s firmware/boot/tests      # 30 tests
-python3 -m unittest discover -s firmware/boot_c0/tests   # 42 tests
+uv run python -m unittest discover -s stress/tests             # 139 tests
+uv run python -m unittest discover -s firmware/boot/tests      # 30 tests
+uv run python -m unittest discover -s firmware/boot_c0/tests   # 42 tests
 bun install && bun run test && bun run typecheck         # camera tool, 19 tests
 ```
 

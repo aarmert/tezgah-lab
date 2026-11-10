@@ -128,7 +128,7 @@ This is a negative control. If the stress test cannot break it, the test measure
 - END writes the header with **no check at all**: no SHORT, no CRC, no SHA, no meta.
 - At boot it jumps to A when payload word 0 looks like a RAM stack pointer
   (`0x20000000 < sp <= 0x20020000`). It never checks the CRC, so a half-written or interrupted image
-  can run (YANLIŞ), crash or hang (ÖLÜ).
+  can run (WRONG), crash or hang (DEAD).
 - Its status line reads `ok:<ver>` when the header magic is present (it trusts the header), and prints
   `slotB=- state=none attempts=0 seq=0 erases=0,0`.
 - No meta log, no trial, no IWDG, no rollback.

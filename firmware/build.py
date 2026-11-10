@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Test firmware'ini derler (Windows + Linux, make gerekmez).
+Builds the test firmware (Windows + Linux, no make needed).
 
-    python firmware/build.py          # build/stm32bench-fw.elf/.hex/.bin üretir
-    python firmware/build.py --json   # sonucu JSON olarak ver (ajanlar için)
+    python firmware/build.py          # makes build/stm32bench-fw.elf/.hex/.bin
+    python firmware/build.py --json   # print the result as JSON (for agents)
 
-arm-none-eabi-gcc PATH'te yoksa STM32CubeCLT ve Arm GNU Toolchain'in
-varsayılan kurulum yerlerine bakar.
+If arm-none-eabi-gcc is not on PATH, it looks in the default install locations
+of STM32CubeCLT and the Arm GNU Toolchain.
 """
 from __future__ import annotations
 
@@ -68,16 +68,16 @@ def main() -> int:
         if args.json:
             print(json.dumps(r, ensure_ascii=False, indent=2))
         else:
-            print(("[OK  ] " if ok else "[HATA] ") + summary)
+            print(("[OK  ] " if ok else "[FAIL] ") + summary)
             if extra.get("output"):
                 print(extra["output"])
         return 0 if ok else 1
 
     gcc = find_gcc()
     if not gcc:
-        return done(False, "arm-none-eabi-gcc bulunamadı.", error_type="tool_not_found", likely_causes=[
-            "STM32CubeCLT kur (derleyici içinde gelir)",
-            "veya Arm GNU Toolchain kur ve bin klasörünü PATH'e ekle",
+        return done(False, "arm-none-eabi-gcc not found.", error_type="tool_not_found", likely_causes=[
+            "Install STM32CubeCLT (it includes the compiler)",
+            "or install the Arm GNU Toolchain and add its bin folder to PATH",
             "Linux: sudo apt install gcc-arm-none-eabi"])
 
     BUILD.mkdir(exist_ok=True)
@@ -85,7 +85,7 @@ def main() -> int:
     cmd = [gcc, *CFLAGS, *[str(HERE / s) for s in SOURCES], *LDFLAGS, "-lgcc", "-o", str(elf)]
     p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if p.returncode != 0:
-        return done(False, "Derleme başarısız.", error_type="compile_error",
+        return done(False, "Build failed.", error_type="compile_error",
                     output=(p.stdout + p.stderr).strip())
 
     objcopy, size = sibling(gcc, "objcopy"), sibling(gcc, "size")
@@ -94,7 +94,7 @@ def main() -> int:
     sz = subprocess.run([size, str(elf)], capture_output=True, text=True).stdout.strip()
 
     warnings = (p.stdout + p.stderr).strip()
-    return done(True, f"{elf.name} hazır.", elf=str(elf), size=sz, warnings=warnings or None)
+    return done(True, f"{elf.name} ready.", elf=str(elf), size=sz, warnings=warnings or None)
 
 
 if __name__ == "__main__":

@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-tezgah - STM32 test tezgahi araci (Windows + Linux)
+tezgah - STM32 test bench tool (Windows + Linux)
 
-Bir kartı yükler, resetler, seri porttan konuşur ve test planlarını
-çalıştırır. Hem insan hem de bir yapay zeka ajanı (--json ile) kullanabilir.
+Flashes a board, resets it, talks to it over the serial port and runs
+test plans. Both a human and an AI agent (with --json) can use it.
 
-Hızlı başlangıç:
-    python bench.py doctor          # her şey hazır mı?
-    python bench.py ports           # seri portları listele
-    python bench.py run smoke       # plans/smoke.toml planını çalıştır
-    python bench.py --sim run smoke # donanım olmadan sahte kartla dene
+Quick start:
+    python bench.py doctor          # is everything ready?
+    python bench.py ports           # list serial ports
+    python bench.py run smoke       # run the plans/smoke.toml plan
+    python bench.py --sim run smoke # try it with a simulated board, no hardware
 
-Gereken: Python 3.11+, pyserial, STM32CubeProgrammer CLI (veya OpenOCD).
+Requires: Python 3.11+, pyserial, STM32CubeProgrammer CLI (or OpenOCD).
 """
 from __future__ import annotations
 
 import sys
 
 if sys.version_info < (3, 11):
-    sys.exit("tezgah: Python 3.11 veya daha yeni gerekli (tomllib için).")
+    sys.exit("tezgah: Python 3.11 or newer is required (for tomllib).")
 
 import argparse
 import csv
@@ -48,11 +48,11 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 # ---------------------------------------------------------------------------
-# Hata ve sonuç yapısı
+# Error and result structure
 # ---------------------------------------------------------------------------
 
 class BenchError(Exception):
-    """Ajanın anlayabileceği, yapılandırılmış hata."""
+    """Structured error that an agent can understand."""
 
     def __init__(self, error_type: str, summary: str,
                  likely_causes: list[str] | None = None, details: str | None = None):
@@ -79,28 +79,28 @@ def emit(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    mark = "OK  " if result.get("ok") else "HATA"
+    mark = "OK  " if result.get("ok") else "FAIL"
     print(f"[{mark}] {result.get('summary', '')}")
     if not result.get("ok"):
         if result.get("error_type"):
-            print(f"       tür: {result['error_type']}")
+            print(f"       type: {result['error_type']}")
         for c in result.get("likely_causes", []):
-            print(f"       olası sebep: {c}")
+            print(f"       likely cause: {c}")
         if result.get("details"):
-            print("       ayrıntı:")
+            print("       details:")
             for line in str(result["details"]).splitlines()[-15:]:
                 print(f"         {line}")
     for key in ("lines", "response"):
         if result.get(key):
-            print("       seri port:")
+            print("       serial:")
             for line in result[key]:
                 print(f"         {line}")
     if result.get("report_dir"):
-        print(f"       rapor: {result['report_dir']}")
+        print(f"       report: {result['report_dir']}")
 
 
 # ---------------------------------------------------------------------------
-# Ayarlar
+# Configuration
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
@@ -111,8 +111,8 @@ DEFAULT_CONFIG = {
                  "banner": "^BOOT ", "banner_timeout_s": 3},
     "permissions": {"allow_flash": True, "allow_reset": True, "plans_dir_only": False},
     "paths": {"plans_dir": "plans", "runs_dir": "runs"},
-    # cam_blink: camera/ (telefon kamerası aracı) ile video. roi = [x, y, genişlik, yükseklik] (piksel) verilirse
-    # LED bölgesi otomatik aranmaz.
+    # cam_blink: video via camera/ (the phone camera tool). If roi = [x, y, width, height] (pixels) is given,
+    # the LED region is not searched for automatically.
     "camera": {"tool_dir": "camera", "bun": "~/.bun/bin/bun", "serial": "",
                "camera": "back", "fps": 30, "roi": None},
 }
@@ -159,16 +159,16 @@ def load_config(arg: str | None, sim: bool) -> Config:
             try:
                 data = tomllib.loads(c.read_text(encoding="utf-8"))
             except tomllib.TOMLDecodeError as e:
-                raise BenchError("config_invalid", f"{c} okunamadı: {e}",
-                                 ["TOML yazım hatası (tırnak, köşeli parantez)"])
+                raise BenchError("config_invalid", f"Could not read {c}: {e}",
+                                 ["TOML syntax error (quotes, square brackets)"])
             cfg = Config(c.resolve(), c.resolve().parent, data)
             break
     else:
         if not sim:
             raise BenchError(
-                "config_not_found", "bench.toml bulunamadı.",
-                ["bench.example.toml dosyasını bench.toml olarak kopyalayıp seri portu düzenle",
-                 "Başka bir yerdeyse --config veya BENCH_CONFIG ile göster"])
+                "config_not_found", "bench.toml not found.",
+                ["Copy bench.example.toml to bench.toml and set the serial port",
+                 "If it is somewhere else, point to it with --config or BENCH_CONFIG"])
         cfg = Config(None, SCRIPT_DIR, {})
 
     if sim:
@@ -178,7 +178,7 @@ def load_config(arg: str | None, sim: bool) -> Config:
 
 
 # ---------------------------------------------------------------------------
-# Denetim kaydı (SHA-256 zincirli) ve kilit
+# Audit log (SHA-256 chained) and lock
 # ---------------------------------------------------------------------------
 
 def audit_append(cfg: Config, entry: dict) -> str:
@@ -202,7 +202,7 @@ def audit_append(cfg: Config, entry: dict) -> str:
 def audit_verify(cfg: Config) -> dict:
     path = cfg.runs_dir / "audit.jsonl"
     if not path.exists():
-        return ok_result("audit", "Henüz kayıt yok.", entries=0)
+        return ok_result("audit", "No entries yet.", entries=0)
     prev = "0" * 64
     n = 0
     for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -211,25 +211,25 @@ def audit_verify(cfg: Config) -> dict:
         rec = json.loads(line)
         h = rec.pop("hash", None)
         if rec.get("prev") != prev:
-            raise BenchError("audit_broken", f"Denetim zinciri {i}. satırda kopuk (prev uyuşmuyor).",
-                             ["Kayıt dosyası elle değiştirilmiş veya satır silinmiş"])
+            raise BenchError("audit_broken", f"Audit chain broken at line {i} (prev does not match).",
+                             ["The log file was edited by hand or a line was deleted"])
         payload = json.dumps(rec, sort_keys=True, ensure_ascii=False)
         if hashlib.sha256((prev + payload).encode("utf-8")).hexdigest() != h:
-            raise BenchError("audit_broken", f"Denetim zinciri {i}. satırda bozuk (hash uyuşmuyor).",
-                             ["Bu satırın içeriği sonradan değiştirilmiş"])
+            raise BenchError("audit_broken", f"Audit chain corrupt at line {i} (hash does not match).",
+                             ["The content of this line was changed afterwards"])
         prev = h
         n += 1
-    return ok_result("audit", f"Denetim zinciri sağlam ({n} kayıt).", entries=n)
+    return ok_result("audit", f"Audit chain intact ({n} entries).", entries=n)
 
 
 class BenchLock:
-    """Aynı anda iki işlemin karta erişmesini engeller (Windows + Linux).
+    """Keeps two processes from accessing the board at the same time (Windows + Linux).
 
-    İşletim sisteminin dosya kilidini kullanır (Linux: flock, Windows: msvcrt.locking).
-    Kilidi tutan işlem ne kadar uzun sürerse sürsün kilit onda kalır; işlem ölürse
-    (çökme, kill, Ctrl+C) kilidi işletim sistemi kendisi bırakır. Bu yüzden "eski kilit"
-    tahmini ve dosya silme gerekmez. Kilit dosyası hiç silinmez, içinde sadece bilgi
-    amaçlı tutan işlemin PID'i yazar.
+    Uses the OS file lock (Linux: flock, Windows: msvcrt.locking). The process holding
+    the lock keeps it however long it runs; if the process dies (crash, kill, Ctrl+C),
+    the OS releases the lock itself. So there is no "stale lock" guessing and no file
+    deletion. The lock file is never deleted; it only holds the PID of the holder,
+    for information.
     """
 
     def __init__(self, cfg: Config, wait_s: float = 30):
@@ -264,9 +264,9 @@ class BenchLock:
                 holder = self._holder()
                 self.f.close()
                 self.f = None
-                raise BenchError("bench_busy", f"Tezgah başka bir işlem tarafından kullanılıyor (pid {holder}).",
-                                 ["Başka bir bench.py komutu çalışıyor (monitor, read, gdbserver açık kalmış olabilir)",
-                                  "O işlem bitince kilit kendiliğinden açılır; dosyayı silmek gerekmez"])
+                raise BenchError("bench_busy", f"The bench is in use by another process (pid {holder}).",
+                                 ["Another bench.py command is running (monitor, read or gdbserver may have been left open)",
+                                  "The lock is released when that process ends; no need to delete the file"])
             time.sleep(0.3)
         self.f.seek(0)
         self.f.truncate()
@@ -284,12 +284,12 @@ class BenchLock:
                 msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
-        self.f.close()  # Linux'ta flock, dosya kapanınca kalkar
+        self.f.close()  # on Linux the flock is released when the file is closed
         self.f = None
 
 
 # ---------------------------------------------------------------------------
-# Harici araç bulma ve çalıştırma
+# Finding and running external tools
 # ---------------------------------------------------------------------------
 
 CUBEPROG_GLOBS = [
@@ -326,12 +326,12 @@ def run_tool(cmd: list[str], timeout: float) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
     except FileNotFoundError:
-        raise BenchError("tool_not_found", f"Program bulunamadı: {cmd[0]}",
-                         ["Kurulu değil veya PATH'te değil", "bench.toml içinde tam yolu ver"])
+        raise BenchError("tool_not_found", f"Program not found: {cmd[0]}",
+                         ["Not installed or not on PATH", "Give the full path in bench.toml"])
     except subprocess.TimeoutExpired:
-        raise BenchError("timeout", f"{Path(cmd[0]).name} {timeout:.0f} saniyede bitmedi ve durduruldu.",
-                         ["Probe takıldı: USB kablosunu çıkarıp tak",
-                          "Kart beslemesi yok veya kararsız"])
+        raise BenchError("timeout", f"{Path(cmd[0]).name} did not finish in {timeout:.0f} s and was stopped.",
+                         ["The probe is stuck: unplug and replug the USB cable",
+                          "The board has no power or the power is unstable"])
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
@@ -340,17 +340,17 @@ def tail(text: str, n: int = 15) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Programlayıcılar: STM32CubeProgrammer, OpenOCD, Sim
+# Programmers: STM32CubeProgrammer, OpenOCD, Sim
 # ---------------------------------------------------------------------------
 
-CAUSES_PROBE = ["USB kablosu takılı değil ya da sadece şarj kablosu",
-                "Windows: ST-Link sürücüsü kurulu değil (STM32CubeProgrammer kurulumu getirir)",
-                "Linux: ST-Link udev kuralı yok veya kullanıcı plugdev grubunda değil",
-                "Probe başka bir programda açık (CubeIDE, CubeProgrammer arayüzü, OpenOCD)"]
-CAUSES_TARGET = ["Kartın beslemesi yok",
-                 "Firmware SWD pinlerini (PA13/PA14) başka amaçla kullanıyor: 'bench.py recover' çalıştır",
-                 "Çip uyku modunda veya kilitlenmiş: 'bench.py recover' çalıştır",
-                 "Discovery kartında CN3 jumperları takılı değil"]
+CAUSES_PROBE = ["USB cable not plugged in, or it is a charge-only cable",
+                "Windows: ST-Link driver not installed (the STM32CubeProgrammer installer includes it)",
+                "Linux: no ST-Link udev rule, or the user is not in the plugdev group",
+                "The probe is open in another program (CubeIDE, CubeProgrammer GUI, OpenOCD)"]
+CAUSES_TARGET = ["The board has no power",
+                 "The firmware uses the SWD pins (PA13/PA14) for something else: run 'bench.py recover'",
+                 "The chip is in sleep mode or locked up: run 'bench.py recover'",
+                 "The CN3 jumpers on the Discovery board are not fitted"]
 
 
 class Programmer:
@@ -361,12 +361,12 @@ class Programmer:
     def probe_check(self) -> str: ...
 
     def debug_commands(self, cmds: list[str], timeout: float = 30) -> str:
-        """Hata ayıklama komutları (halt, reg, mdw). Şimdilik sadece OpenOCD destekler."""
-        raise BenchError("not_supported", f"Bu komut '{self.name}' backend'inde desteklenmiyor.",
-                         ["bench.toml [probe] backend = \"openocd\" yap (Windows'ta da OpenOCD kurulabilir)"])
+        """Debug commands (halt, reg, mdw). Only OpenOCD supports them for now."""
+        raise BenchError("not_supported", f"This command is not supported by the '{self.name}' backend.",
+                         ["Set backend = \"openocd\" in bench.toml [probe] (OpenOCD can be installed on Windows too)"])
 
     def tool_version(self) -> str:
-        """Programlayıcı aracının sürümü (rapor başlığı için)."""
+        """Version of the programmer tool (for the report header)."""
         exe = getattr(self, "exe", None)
         if not exe:
             return "?"
@@ -378,10 +378,10 @@ class Programmer:
         return m.group(1) if m else "?"
 
     def read_uid(self) -> str:
-        """Çipin 96 bitlik UID'sini debug portundan okur (çekirdek durdurulmaz)."""
+        """Reads the chip's 96-bit UID over the debug port (the core is not halted)."""
         words = parse_mdw(self.debug_commands([f"mdw 0x{UID_ADDR:08X} 3"]))
         if len(words) != 3:
-            raise BenchError("tool_error", f"UID için 3 kelime istendi, {len(words)} okundu.")
+            raise BenchError("tool_error", f"Asked for 3 words for the UID, read {len(words)}.")
         return "".join(f"{v:08X}" for _, v in words)
 
 
@@ -395,9 +395,9 @@ class CubeProgrammer(Programmer):
         self.sn = cfg.get("probe", "serial_number")
         self.timeout = float(cfg.get("probe", "timeout_s"))
         if not self.exe:
-            raise BenchError("tool_not_found", "STM32_Programmer_CLI bulunamadı.",
-                             ["STM32CubeProgrammer veya STM32CubeCLT kurulu değil",
-                              "Kuruluysa bench.toml [probe] cubeprog_path ile tam yolu ver"])
+            raise BenchError("tool_not_found", "STM32_Programmer_CLI not found.",
+                             ["STM32CubeProgrammer or STM32CubeCLT is not installed",
+                              "If it is installed, give the full path with cubeprog_path in bench.toml [probe]"])
 
     def _conn(self, mode: str) -> list[str]:
         c = ["-c", "port=SWD", f"mode={mode}"]
@@ -409,43 +409,43 @@ class CubeProgrammer(Programmer):
     def _classify(rc: int, out: str, verify: bool) -> None:
         low = out.lower()
         if re.search(r"no (st-?link|debug probe) detected|no st-?link found|unable to open probe|dev_usb_comm_err", low):
-            raise BenchError("probe_not_found", "ST-Link probe bulunamadı.", CAUSES_PROBE, tail(out))
+            raise BenchError("probe_not_found", "ST-Link probe not found.", CAUSES_PROBE, tail(out))
         if re.search(r"no stm32 target found|unable to get core id|target not found|dev_connect_err|failed to connect", low):
-            raise BenchError("target_not_responding", "ST-Link bulundu ama hedef çip cevap vermiyor.",
+            raise BenchError("target_not_responding", "ST-Link found, but the target chip does not respond.",
                              CAUSES_TARGET, tail(out))
         if re.search(r"file .*(not found|does not exist)|cannot open file|wrong file", low):
-            raise BenchError("image_not_found", "Yüklenecek dosya bulunamadı veya okunamadı.",
-                             ["Önce firmware'i derle: python firmware/build.py"], tail(out))
+            raise BenchError("image_not_found", "The image to flash was not found or could not be read.",
+                             ["Build the firmware first: python firmware/build.py"], tail(out))
         if re.search(r"read.?out protection|rdp", low) and rc != 0:
-            raise BenchError("read_protected", "Çipte okuma koruması (RDP) aktif.",
-                             ["Bu araç option byte'lara bilerek dokunmaz; bir insan CubeProgrammer ile kontrol etmeli"],
+            raise BenchError("read_protected", "Read-out protection (RDP) is active on the chip.",
+                             ["This tool deliberately does not touch option bytes; a human should check with CubeProgrammer"],
                              tail(out))
         if re.search(r"verif\w* (failed|error)|data mismatch|mismatch found", low):
-            raise BenchError("verify_failed", "Yazma sonrası doğrulama başarısız.",
-                             ["Flash sektörü yazma korumalı", "Besleme kararsız", "Kablo/bağlantı gevşek"],
+            raise BenchError("verify_failed", "Verification after writing failed.",
+                             ["The flash sector is write-protected", "Unstable power", "Loose cable/connection"],
                              tail(out))
         err_lines = [l.strip() for l in out.splitlines() if re.match(r"\s*error", l, re.I)]
         if rc != 0 or err_lines:
-            raise BenchError("tool_error", err_lines[0] if err_lines else f"STM32_Programmer_CLI hata kodu {rc}",
-                             ["Ayrıntıya bak; gerekirse 'bench.py recover' dene"], tail(out))
+            raise BenchError("tool_error", err_lines[0] if err_lines else f"STM32_Programmer_CLI exit code {rc}",
+                             ["See details; try 'bench.py recover' if needed"], tail(out))
 
     def flash(self, image: Path, under_reset: bool = False) -> str:
         mode = "UR" if under_reset else self.mode
         rc, out = run_tool([self.exe, *self._conn(mode), "-w", str(image), "-v", "-rst"], self.timeout)
         self._classify(rc, out, verify=True)
-        return f"{image.name} yüklendi ve doğrulandı (mod={mode})."
+        return f"{image.name} flashed and verified (mode={mode})."
 
     def reset(self) -> str:
         rc, out = run_tool([self.exe, *self._conn(self.mode), "-rst"], 30)
         self._classify(rc, out, verify=False)
-        return "Kart resetlendi."
+        return "Board reset."
 
     def probe_check(self) -> str:
         rc, out = run_tool([self.exe, "-l", "st-link"], 30)
         sns = re.findall(r"ST-?LINK SN\s*:\s*(\S+)", out, re.I)
         if not sns:
-            raise BenchError("probe_not_found", "Bağlı ST-Link yok.", CAUSES_PROBE, tail(out))
-        return f"ST-Link bulundu: {', '.join(sns)}"
+            raise BenchError("probe_not_found", "No ST-Link connected.", CAUSES_PROBE, tail(out))
+        return f"ST-Link found: {', '.join(sns)}"
 
 
 class OpenOCD(Programmer):
@@ -458,8 +458,8 @@ class OpenOCD(Programmer):
         self.sn = cfg.get("probe", "serial_number")
         self.timeout = float(cfg.get("probe", "timeout_s"))
         if not self.exe:
-            raise BenchError("tool_not_found", "openocd bulunamadı.",
-                             ["Linux: sudo apt install openocd", "bench.toml [probe] openocd_path ile yolu ver"])
+            raise BenchError("tool_not_found", "openocd not found.",
+                             ["Linux: sudo apt install openocd", "Give the path with openocd_path in bench.toml [probe]"])
 
     def _base(self, under_reset: bool) -> list[str]:
         c = [self.exe, "-f", self.interface, "-f", self.target]
@@ -473,32 +473,32 @@ class OpenOCD(Programmer):
     def _classify(rc: int, out: str) -> None:
         low = out.lower()
         if re.search(r"open failed|unable to open|no device found|libusb_error|could not find", low):
-            raise BenchError("probe_not_found", "ST-Link probe bulunamadı.", CAUSES_PROBE, tail(out))
+            raise BenchError("probe_not_found", "ST-Link probe not found.", CAUSES_PROBE, tail(out))
         if re.search(r"init mode failed|unable to connect to the target|error connecting dp|target not examined", low):
-            raise BenchError("target_not_responding", "Probe bulundu ama hedef çip cevap vermiyor.",
+            raise BenchError("target_not_responding", "Probe found, but the target chip does not respond.",
                              CAUSES_TARGET, tail(out))
         if re.search(r"couldn't open|no such file", low):
-            raise BenchError("image_not_found", "Yüklenecek dosya açılamadı.", [], tail(out))
+            raise BenchError("image_not_found", "Could not open the image to flash.", [], tail(out))
         if re.search(r"verify failed|checksum mismatch", low):
-            raise BenchError("verify_failed", "Doğrulama başarısız.", [], tail(out))
+            raise BenchError("verify_failed", "Verification failed.", [], tail(out))
         if rc != 0:
-            raise BenchError("tool_error", f"openocd hata kodu {rc}", [], tail(out))
+            raise BenchError("tool_error", f"openocd exit code {rc}", [], tail(out))
 
     def flash(self, image: Path, under_reset: bool = False) -> str:
         cmd = self._base(under_reset) + ["-c", f"program {{{image.resolve().as_posix()}}} verify reset exit"]
         rc, out = run_tool(cmd, self.timeout)
         self._classify(rc, out)
-        return f"{image.name} yüklendi ve doğrulandı."
+        return f"{image.name} flashed and verified."
 
     def reset(self) -> str:
         rc, out = run_tool(self._base(False) + ["-c", "init; reset run; shutdown"], 30)
         self._classify(rc, out)
-        return "Kart resetlendi."
+        return "Board reset."
 
     def probe_check(self) -> str:
         rc, out = run_tool(self._base(False) + ["-c", "init; shutdown"], 30)
         self._classify(rc, out)
-        return "OpenOCD probe ve hedefe bağlandı."
+        return "OpenOCD connected to the probe and the target."
 
     def debug_commands(self, cmds: list[str], timeout: float = 30) -> str:
         cmd = self._base(False) + ["-c", "init"]
@@ -509,19 +509,19 @@ class OpenOCD(Programmer):
         return out
 
     def gdb_server_cmd(self, port: int) -> list[str]:
-        # Sadece localhost'tan bağlanılır (OpenOCD 0.12 varsayılanı); telnet/tcl kapalı
+        # Listens on localhost only (OpenOCD 0.12 default); telnet/tcl disabled
         return self._base(False) + ["-c", f"gdb_port {port}", "-c", "telnet_port disabled",
                                     "-c", "tcl_port disabled"]
 
 
-# --- Sahte kart: donanım olmadan aracı ve planları denemek için -------------
+# --- Simulated board: for trying the tool and plans without hardware -------
 
 SIM_UID = "0033002A3438511234363632"
 SIM_FW_VERSION = "1.2.0"
 
 
 class SimBoard:
-    """test firmware'inin davranışını taklit eder; durum runs/sim_state.json'da tutulur."""
+    """Mimics the test firmware; the state is kept in runs/sim_state.json."""
 
     def __init__(self, cfg: Config):
         self.state_path = cfg.runs_dir / "sim_state.json"
@@ -535,7 +535,7 @@ class SimBoard:
         self.image_path = st.get("image_path")
         self.crashed = st.get("crashed", False)
         self.boot_t = st.get("boot_t", time.time())
-        self.green = st.get("green", 2.0)   # yeşil LED: yanıp sönme Hz'i, "on" veya "off"
+        self.green = st.get("green", 2.0)   # green LED: blink rate in Hz, "on" or "off"
         self.out: list[str] = []
 
     def _save(self):
@@ -545,8 +545,8 @@ class SimBoard:
 
     def flash(self, image: Path):
         if not image.is_file():
-            raise BenchError("image_not_found", f"{image} bulunamadı.",
-                             ["Önce firmware'i derle: python firmware/build.py"])
+            raise BenchError("image_not_found", f"{image} not found.",
+                             ["Build the firmware first: python firmware/build.py"])
         self.image = image.name
         self.image_path = str(image.resolve())
         self.reset("PIN,SFT")
@@ -560,7 +560,7 @@ class SimBoard:
         self._save()
 
     def write_video(self, dest: Path, seconds: float):
-        """Yeşil LED'i taklit eden sentetik video (30 fps): gri zemin, LED yerinde yanıp sönen kare."""
+        """Synthetic video (30 fps) that mimics the green LED: grey background, a blinking square where the LED is."""
         if isinstance(self.green, float):
             half = 0.5 / self.green
             enable = f"enable='lt(mod(t,{2 * half:.6f}),{half:.6f})'"
@@ -572,10 +572,10 @@ class SimBoard:
                             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dest)],
                            capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
-            raise BenchError("camera_failed", "[sim] sentetik video üretilemedi (ffmpeg).", [], tail(p.stderr))
+            raise BenchError("camera_failed", "[sim] could not generate the synthetic video (ffmpeg).", [], tail(p.stderr))
 
     def _fault_pc(self) -> int:
-        """Gerçek firmware'deki 'udf' komutunun adresini bul (yoksa 0)."""
+        """Find the address of the 'udf' instruction in the real firmware (0 if there is none)."""
         gcc = shutil.which("arm-none-eabi-gcc")
         if not gcc or not self.image_path:
             return 0
@@ -635,14 +635,14 @@ class SimProgrammer(Programmer):
     def flash(self, image: Path, under_reset: bool = False) -> str:
         time.sleep(0.2)
         self.board.flash(image)
-        return f"[sim] {image.name} yüklendi ve doğrulandı."
+        return f"[sim] {image.name} flashed and verified."
 
     def reset(self) -> str:
         self.board.reset()
-        return "[sim] Kart resetlendi."
+        return "[sim] Board reset."
 
     def probe_check(self) -> str:
-        return "[sim] Sahte probe hazır."
+        return "[sim] Simulated probe ready."
 
     def tool_version(self) -> str:
         return "sim"
@@ -659,17 +659,17 @@ def make_programmer(cfg: Config, board: SimBoard | None) -> Programmer:
         return CubeProgrammer(cfg)
     if backend == "openocd":
         return OpenOCD(cfg)
-    raise BenchError("config_invalid", f"Bilinmeyen backend: {backend}", ["cubeprog, openocd veya sim olmalı"])
+    raise BenchError("config_invalid", f"Unknown backend: {backend}", ["Must be cubeprog, openocd or sim"])
 
 
 # ---------------------------------------------------------------------------
-# Seri port: gerçek ve sahte
+# Serial port: real and simulated
 # ---------------------------------------------------------------------------
 
-CAUSES_SERIAL = ["Port adı yanlış: 'bench.py ports' ile listele",
-                 "Port başka bir programda açık (PuTTY, Arduino IDE, CubeIDE seri monitörü)",
-                 "USB-TTL çıkarılmış",
-                 "Linux: kullanıcı dialout grubunda değil"]
+CAUSES_SERIAL = ["Wrong port name: list them with 'bench.py ports'",
+                 "The port is open in another program (PuTTY, Arduino IDE, CubeIDE serial monitor)",
+                 "The USB-TTL adapter is unplugged",
+                 "Linux: the user is not in the dialout group"]
 
 
 class SerialTransport:
@@ -677,11 +677,11 @@ class SerialTransport:
         try:
             import serial  # noqa: F401
         except ImportError:
-            raise BenchError("pyserial_missing", "pyserial kurulu değil.",
+            raise BenchError("pyserial_missing", "pyserial is not installed.",
                              ["Windows: py -m pip install pyserial", "Linux: sudo apt install python3-serial"])
         if not port:
-            raise BenchError("config_invalid", "bench.toml içinde [serial] port boş.",
-                             ["'bench.py ports' ile portu bul ve yaz (Windows: COM5, Linux: /dev/ttyUSB0)"])
+            raise BenchError("config_invalid", "[serial] port is empty in bench.toml.",
+                             ["Find the port with 'bench.py ports' and set it (Windows: COM5, Linux: /dev/ttyUSB0)"])
         self.port, self.baud = port, baud
         self.ser = None
         self._open()
@@ -689,13 +689,13 @@ class SerialTransport:
     def _open(self):
         import serial
         try:
-            # serial_for_url: COM5, /dev/ttyUSB0 ve ağ üzerinden socket://host:port adreslerini destekler
+            # serial_for_url: supports COM5, /dev/ttyUSB0 and network socket://host:port addresses
             self.ser = serial.serial_for_url(self.port, baudrate=self.baud, timeout=0.05, write_timeout=1)
         except serial.SerialException as e:
-            raise BenchError("serial_open_failed", f"{self.port} açılamadı.", CAUSES_SERIAL, str(e))
+            raise BenchError("serial_open_failed", f"Could not open {self.port}.", CAUSES_SERIAL, str(e))
 
     def _reopen(self):
-        """Port bir anlığına kaybolursa (USB yeniden tanındı) tekrar bağlan."""
+        """Reconnect if the port disappears for a moment (USB re-enumerated)."""
         try:
             self.ser.close()
         except Exception:
@@ -727,7 +727,7 @@ class SerialTransport:
             try:
                 n = self.ser.in_waiting
                 if not n and timeout <= 0:
-                    break  # read(1) port zaman aşımı (50 ms) kadar bloklardı
+                    break  # read(1) would block for the port timeout (50 ms)
                 data = self.ser.read(n or 1)
             except (serial.SerialException, OSError):
                 self._reopen()
@@ -770,7 +770,7 @@ class SimTransport:
 
 
 class Session:
-    """Satır bazlı seri haberleşme + zaman damgalı döküm."""
+    """Line-based serial communication + timestamped transcript."""
 
     def __init__(self, transport):
         self.t = transport
@@ -779,9 +779,9 @@ class Session:
         self.transcript: list[tuple[float, str, str]] = []
         self.t0 = time.monotonic()
         self.last_fault: str | None = None
-        self.run_dir: Path | None = None   # cam_blink dosyaları buraya
+        self.run_dir: Path | None = None   # cam_blink files go here
         self.step_no = 0
-        self.cam_last: dict | None = None  # son yanıp sönme ölçümünün bölgesi ve seviyeleri (steady için)
+        self.cam_last: dict | None = None  # region and levels of the last blink measurement (for steady)
 
     def _pump(self, timeout: float):
         data = self.t.read_available(timeout)
@@ -799,13 +799,13 @@ class Session:
                 self.last_fault = line
 
     def recent(self, n: int = 12) -> str:
-        return "\n".join(f"{d} {txt}" for _, d, txt in self.transcript[-n:]) or "(hiç yok)"
+        return "\n".join(f"{d} {txt}" for _, d, txt in self.transcript[-n:]) or "(none)"
 
     def note(self, text: str):
         self.transcript.append((time.monotonic() - self.t0, "#", text))
 
     def drain(self):
-        """Bekleyen eski satırları at (yeni komutun cevabıyla karışmasın). Beklemez: sadece gelmiş olanı okur."""
+        """Drop old pending lines (so they do not mix with the reply to a new command). Does not wait: reads only what has arrived."""
         self._pump(0)
         self.pending.clear()
 
@@ -850,15 +850,15 @@ def open_session(cfg: Config, board: SimBoard | None) -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Test planı çalıştırıcı
+# Test plan runner
 # ---------------------------------------------------------------------------
 
-CAM_SMALL_W = 320       # LED arama ve ölçüm bu genişliğe küçültülmüş karelerde yapılır
-CAM_ROI_SMALL = 5       # LED bölgesinin kenarı (küçük karede piksel)
-CAM_MIN_CONTRAST = 30   # yanıp sönme sayılmak için en az parlaklık farkı (0-255)
+CAM_SMALL_W = 320       # LED search and measurement run on frames scaled down to this width
+CAM_ROI_SMALL = 5       # side of the LED region (pixels in the small frame)
+CAM_MIN_CONTRAST = 30   # minimum brightness difference to count as blinking (0-255)
 ACTIONS = {"flash", "reset", "expect", "send", "silence", "delay", "clock_check", "cam_blink"}
 TICK_PATTERN = r"^TICK (\d+)$"
-NEVER_MATCH = "__BU_SATIR_ESLESMEMELI__"
+NEVER_MATCH = "__THIS_LINE_MUST_NOT_MATCH__"
 
 
 def load_plan(cfg: Config, name_or_path: str) -> tuple[Path, dict]:
@@ -869,44 +869,44 @@ def load_plan(cfg: Config, name_or_path: str) -> tuple[Path, dict]:
         p = (Path.cwd() / p) if (Path.cwd() / p).exists() else cfg.resolve(p)
     p = p.resolve()
     if cfg.get("permissions", "plans_dir_only") and cfg.plans_dir.resolve() not in p.parents:
-        raise BenchError("permission_denied", f"Sadece {cfg.plans_dir} içindeki planlar çalıştırılabilir.",
-                         ["Yeni planı bir insanın onaylayıp plans/ klasörüne koyması gerekir"])
+        raise BenchError("permission_denied", f"Only plans inside {cfg.plans_dir} may be run.",
+                         ["A human must approve the new plan and put it in the plans/ folder"])
     if not p.is_file():
-        raise BenchError("plan_not_found", f"Plan bulunamadı: {p}", [f"{cfg.plans_dir} içindeki planlara bak"])
+        raise BenchError("plan_not_found", f"Plan not found: {p}", [f"See the plans in {cfg.plans_dir}"])
     try:
         plan = tomllib.loads(p.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
-        raise BenchError("plan_invalid", f"{p.name} okunamadı: {e}")
+        raise BenchError("plan_invalid", f"Could not read {p.name}: {e}")
     steps = plan.get("step", [])
     if not steps:
-        raise BenchError("plan_invalid", f"{p.name} içinde hiç [[step]] yok.")
+        raise BenchError("plan_invalid", f"{p.name} has no [[step]].")
     for i, s in enumerate(steps, 1):
         if s.get("action") not in ACTIONS:
-            raise BenchError("plan_invalid", f"{p.name} adım {i}: bilinmeyen action '{s.get('action')}'",
-                             [f"Geçerli olanlar: {', '.join(sorted(ACTIONS))}"])
+            raise BenchError("plan_invalid", f"{p.name} step {i}: unknown action '{s.get('action')}'",
+                             [f"Valid actions: {', '.join(sorted(ACTIONS))}"])
         if s["action"] == "clock_check":
             rng = s.get("range")
             if not (isinstance(rng, list) and len(rng) == 2 and all(isinstance(v, (int, float)) for v in rng)):
-                raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için range = [alt, üst] gerekli.")
+                raise BenchError("plan_invalid", f"{p.name} step {i}: clock_check needs range = [low, high].")
             if not isinstance(s.get("seconds"), (int, float)) or s["seconds"] <= 0:
-                raise BenchError("plan_invalid", f"{p.name} adım {i}: clock_check için seconds > 0 gerekli.")
+                raise BenchError("plan_invalid", f"{p.name} step {i}: clock_check needs seconds > 0.")
         if s["action"] == "cam_blink":
             steady = s.get("steady")
             if steady not in (None, "on", "off"):
-                raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink steady 'on' veya 'off' olmalı.")
+                raise BenchError("plan_invalid", f"{p.name} step {i}: cam_blink steady must be 'on' or 'off'.")
             for key in ("range", "duty_range"):
                 rng = s.get(key)
                 if rng is not None and not (isinstance(rng, list) and len(rng) == 2
                                             and all(isinstance(v, (int, float)) for v in rng)):
-                    raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink {key} = [alt, üst] olmalı.")
+                    raise BenchError("plan_invalid", f"{p.name} step {i}: cam_blink {key} must be [low, high].")
             if steady is None and s.get("range") is None:
-                raise BenchError("plan_invalid", f"{p.name} adım {i}: cam_blink için range (Hz) veya steady gerekli.")
+                raise BenchError("plan_invalid", f"{p.name} step {i}: cam_blink needs range (Hz) or steady.")
         for key in ("pattern", "expect"):
             if key in s:
                 try:
                     re.compile(s[key])
                 except re.error as e:
-                    raise BenchError("plan_invalid", f"{p.name} adım {i}: geçersiz regex: {e}")
+                    raise BenchError("plan_invalid", f"{p.name} step {i}: invalid regex: {e}")
     return p, plan
 
 
@@ -914,19 +914,19 @@ def check_range(m: re.Match, rng) -> tuple[bool, str]:
     if not rng:
         return True, ""
     if not m.groups():
-        return False, "range verilmiş ama desende yakalama grubu () yok"
+        return False, "range is given but the pattern has no capture group ()"
     try:
         val = float(m.group(1))
     except (TypeError, ValueError):
-        return False, f"yakalanan değer sayı değil: {m.group(1)!r}"
+        return False, f"captured value is not a number: {m.group(1)!r}"
     lo, hi = rng
     if lo <= val <= hi:
-        return True, f"değer {val:g} [{lo}, {hi}] aralığında"
-    return False, f"değer {val:g} beklenen aralık [{lo}, {hi}] dışında"
+        return True, f"value {val:g} within [{lo}, {hi}]"
+    return False, f"value {val:g} outside the expected range [{lo}, {hi}]"
 
 
 def addr2line(elf: Path, addrs: list[int]) -> dict[int, str]:
-    """Adresleri 'fonksiyon() dosya:satır' metnine çevirir (addr2line varsa). Çözülemeyenler sözlükte olmaz."""
+    """Turns addresses into 'function() file:line' text (if addr2line is available). Unresolved ones are left out of the dict."""
     if not addrs or not elf.is_file():
         return {}
     gcc = find_tool(None, ["arm-none-eabi-gcc"], [
@@ -951,7 +951,7 @@ def addr2line(elf: Path, addrs: list[int]) -> dict[int, str]:
 
 
 def resolve_fault(elf: Path, fault_line: str) -> str | None:
-    """HARDFAULT satırındaki pc adresini fonksiyon:dosya:satır'a çevirir (addr2line varsa)."""
+    """Turns the pc address in a HARDFAULT line into function:file:line (if addr2line is available)."""
     m = re.search(r"pc=0x([0-9A-Fa-f]{8})", fault_line)
     if not m:
         return None
@@ -961,18 +961,18 @@ def resolve_fault(elf: Path, fault_line: str) -> str | None:
 
 def check_permission(cfg: Config, key: str, what: str):
     if not cfg.get("permissions", key):
-        raise BenchError("permission_denied", f"{what} izni kapalı (bench.toml [permissions] {key}).",
-                         ["Bu izni sadece bir insan açabilir"])
+        raise BenchError("permission_denied", f"{what} permission is off (bench.toml [permissions] {key}).",
+                         ["Only a human can turn this permission on"])
 
 
 def run_step(cfg: Config, prog: Programmer, sess: Session, plan: dict, step: dict) -> str:
     a = step["action"]
     timeout = float(step.get("timeout", 2))
     if a == "flash":
-        check_permission(cfg, "allow_flash", "Yükleme")
+        check_permission(cfg, "allow_flash", "Flash")
         image = step.get("image") or plan.get("firmware")
         if not image:
-            raise BenchError("plan_invalid", "flash adımı için 'image' veya planda 'firmware' gerekli.")
+            raise BenchError("plan_invalid", "The flash step needs 'image', or 'firmware' in the plan.")
         sess.drain()
         sess.last_fault = None
         sess.note(f"flash {image}")
@@ -985,14 +985,14 @@ def run_step(cfg: Config, prog: Programmer, sess: Session, plan: dict, step: dic
         return prog.reset()
     if a == "delay":
         time.sleep(float(step.get("seconds", 0.5)))
-        return f"{step.get('seconds', 0.5)} sn beklendi."
+        return f"Waited {step.get('seconds', 0.5)} s."
     if a == "silence":
         secs = float(step.get("seconds", 1))
         lines = sess.collect(secs)
         if lines:
-            raise BenchError("unexpected_output", f"{secs:g} sn sessizlik bekleniyordu ama {len(lines)} satır geldi.",
-                             ["Kart hâlâ çalışıyor, beklenen çökme/uyku olmadı"], "\n".join(lines[:10]))
-        return f"{secs:g} sn boyunca çıktı yok (beklenen)."
+            raise BenchError("unexpected_output", f"Expected {secs:g} s of silence but got {len(lines)} lines.",
+                             ["The board is still running; the expected crash/sleep did not happen"], "\n".join(lines[:10]))
+        return f"No output for {secs:g} s (as expected)."
 
     if a == "clock_check":
         return clock_check(cfg, sess, plan, step, timeout)
@@ -1004,18 +1004,18 @@ def run_step(cfg: Config, prog: Programmer, sess: Session, plan: dict, step: dic
         sess.drain()
         sess.send_line(step["text"])
         if not pattern:
-            return f"'{step['text']}' gönderildi."
+            return f"Sent '{step['text']}'."
     m, line = expect_line(cfg, sess, plan, step, pattern, timeout,
-                          f"'{step['text']}' komutuna " if a == "send" else "")
+                          f"to '{step['text']}': " if a == "send" else "")
     good, msg = check_range(m, step.get("range"))
     if not good:
-        raise BenchError("value_out_of_range", f"'{line}': {msg}", ["Ölçülen değeri ve beklenen aralığı kontrol et"])
+        raise BenchError("value_out_of_range", f"'{line}': {msg}", ["Check the measured value and the expected range"])
     return f"'{line}'" + (f" ({msg})" if msg else "")
 
 
 def expect_line(cfg: Config, sess: Session, plan: dict, step: dict, pattern: str, timeout: float,
                 where: str = "") -> tuple[re.Match, str]:
-    """Desene uyan satırı bekler; gelmezse çökme/zaman aşımı hatası verir."""
+    """Waits for a line that matches the pattern; raises a crash/timeout error if none arrives."""
     m, line, seen = sess.wait_for(pattern, timeout)
     if m:
         return m, line
@@ -1023,66 +1023,66 @@ def expect_line(cfg: Config, sess: Session, plan: dict, step: dict, pattern: str
         image = step.get("image") or plan.get("firmware")
         loc = resolve_fault(cfg.resolve(image), sess.last_fault) if image else None
         raise BenchError("target_crashed",
-                         f"{where}cevap gelmedi; kart çökmüş: {sess.last_fault}",
-                         ["Firmware HardFault'a düştü; pc adresindeki koda bak"] +
-                         ([f"Çökme yeri: {loc}"] if loc else
-                          ["pc'yi koda çevir: arm-none-eabi-addr2line -f -e firmware.elf <pc>"]),
-                         "Son seri trafik:\n" + sess.recent())
-    causes = ["Firmware bu komutu tanımıyor veya cevap formatı farklı",
-              "Kart donmuş (sonsuz döngü) veya çökmüş",
-              "Baud hızı yanlış (bozuk karakterler)",
-              "TX/RX kabloları ters veya GND bağlı değil"] if not seen else \
-             ["Cevap geldi ama beklenen desene uymadı: aşağıdaki satırlara bak"]
+                         f"{where}no reply; the board crashed: {sess.last_fault}",
+                         ["The firmware hit a HardFault; look at the code at the pc address"] +
+                         ([f"Crash location: {loc}"] if loc else
+                          ["Map the pc to code: arm-none-eabi-addr2line -f -e firmware.elf <pc>"]),
+                         "Recent serial traffic:\n" + sess.recent())
+    causes = ["The firmware does not know this command, or the reply format is different",
+              "The board is hung (infinite loop) or crashed",
+              "Wrong baud rate (garbled characters)",
+              "TX/RX wires swapped, or GND not connected"] if not seen else \
+             ["A reply came but did not match the expected pattern: see the lines below"]
     raise BenchError("expect_timeout",
-                     f"{where}{timeout:g} sn içinde /{pattern}/ desenine uyan satır gelmedi.",
-                     causes, "Son seri trafik:\n" + sess.recent())
+                     f"{where}no line matching /{pattern}/ within {timeout:g} s.",
+                     causes, "Recent serial traffic:\n" + sess.recent())
 
 
 def read_tick(cfg: Config, sess: Session, plan: dict, step: dict, timeout: float) -> tuple[int, float, float]:
-    """TICK gönderir. (kart ms, PC zamanı, gidiş-dönüş sn) döndürür.
-    PC zamanı gönderme ile cevabın gelişinin ortası: kart sayacı bu aralıkta bir yerde okundu."""
+    """Sends TICK. Returns (board ms, PC time, round trip s).
+    The PC time is the midpoint between sending and the reply: the board counter was read somewhere in that interval."""
     sess.drain()
     t_send = time.monotonic()
     sess.send_line("TICK")
-    m, _ = expect_line(cfg, sess, plan, step, TICK_PATTERN, timeout, "'TICK' komutuna ")
+    m, _ = expect_line(cfg, sess, plan, step, TICK_PATTERN, timeout, "to 'TICK': ")
     t_recv = time.monotonic()
     return int(m.group(1)), (t_send + t_recv) / 2, t_recv - t_send
 
 
 def clock_check(cfg: Config, sess: Session, plan: dict, step: dict, timeout: float) -> str:
-    """Kartın ms sayacını PC'nin monotonik saatiyle karşılaştırır: oran = kart süresi / PC süresi."""
+    """Compares the board's ms counter with the PC monotonic clock: ratio = board time / PC time."""
     secs = float(step["seconds"])
     lo, hi = step["range"]
     tick0, pc0, rtt0 = read_tick(cfg, sess, plan, step, timeout)
-    sess.note(f"clock_check: {secs:g} sn bekleniyor")
+    sess.note(f"clock_check: waiting {secs:g} s")
     time.sleep(max(0.0, pc0 + secs - time.monotonic()))
     tick1, pc1, rtt1 = read_tick(cfg, sess, plan, step, timeout)
     card_ms = tick1 - tick0
     pc_ms = (pc1 - pc0) * 1000
-    # PC zamanının belirsizliği: her ölçümde gidiş-dönüşün yarısı
+    # uncertainty of the PC time: half the round trip of each reading
     unc_ms = (rtt0 + rtt1) / 2 * 1000
-    times = f"kart {card_ms} ms, PC {pc_ms:.1f} ms (±{unc_ms:.1f} ms)"
+    times = f"board {card_ms} ms, PC {pc_ms:.1f} ms (±{unc_ms:.1f} ms)"
     if card_ms <= 0:
-        raise BenchError("target_reset", f"TICK ilerlemedi ({tick0} -> {tick1}); {times}.",
-                         ["Kart ölçüm sırasında resetlendi (seri günlükte BOOT satırına bak)",
-                          "SysTick kesmesi çalışmıyor"])
+        raise BenchError("target_reset", f"TICK did not advance ({tick0} -> {tick1}); {times}.",
+                         ["The board reset during the measurement (look for a BOOT line in the serial log)",
+                          "The SysTick interrupt is not running"])
     ratio = card_ms / pc_ms
-    msg = f"oran {ratio:.4f}: {times}"
+    msg = f"ratio {ratio:.4f}: {times}"
     if not lo <= ratio <= hi:
-        raise BenchError("value_out_of_range", f"saat oranı {ratio:.4f} beklenen aralık [{lo}, {hi}] dışında; {times}.",
-                         ["SysTick reload değeri yanlış hesaplanmış (HSI_HZ / 1000 - 1 olmalı)",
-                          "Saat kaynağı veya frekansı firmware'in varsaydığı gibi değil (HSI 16 MHz, PLL yok)",
-                          "HSI kalibrasyonu bozuk (RCC_CR HSITRIM)",
-                          "Kesmeler uzun süre kapalı kalıyor, SysTick kesmeleri kaçıyor"])
-    return f"{msg} ([{lo}, {hi}] aralığında)"
+        raise BenchError("value_out_of_range", f"clock ratio {ratio:.4f} outside the expected range [{lo}, {hi}]; {times}.",
+                         ["Wrong SysTick reload value (should be HSI_HZ / 1000 - 1)",
+                          "The clock source or frequency is not what the firmware assumes (HSI 16 MHz, no PLL)",
+                          "Bad HSI calibration (RCC_CR HSITRIM)",
+                          "Interrupts stay disabled for long periods and SysTick interrupts are missed"])
+    return f"{msg} (within [{lo}, {hi}])"
 
 
 # ---------------------------------------------------------------------------
-# Kamera ile LED yanıp sönme ölçümü (cam_blink)
+# LED blink measurement with the camera (cam_blink)
 # ---------------------------------------------------------------------------
 
 def record_video(cfg: Config, prog: Programmer, seconds: float, dest: Path) -> None:
-    """Videoyu çekip dest'e taşır. Gerçek kartta camera/ aracı, sim'de ffmpeg ile sentetik video."""
+    """Records the video and moves it to dest. On a real board uses the camera/ tool, in sim a synthetic ffmpeg video."""
     if isinstance(prog, SimProgrammer):
         prog.board.write_video(dest, seconds)
         return
@@ -1092,22 +1092,22 @@ def record_video(cfg: Config, prog: Programmer, seconds: float, dest: Path) -> N
         bun = shutil.which("bun") or bun
     cmd = [bun, "scripts/record-video.ts", cfg.get("camera", "serial") or "",
            cfg.get("camera", "camera"), f"{seconds:g}", str(cfg.get("camera", "fps"))]
-    # serial boşsa kamera aracı tek bağlı cihazı seçer; birden fazla cihaz varsa hata verir
+    # if serial is empty the camera tool picks the only connected device; with more than one device it fails
     try:
         p = subprocess.run(cmd, cwd=tool_dir, capture_output=True, text=True, errors="replace",
                            timeout=seconds + 90)
     except FileNotFoundError:
-        raise BenchError("tool_not_found", f"Kamera aracı çalıştırılamadı: {bun} / {tool_dir}",
-                         ["bench.toml [camera] tool_dir ve bun yollarını kontrol et"])
+        raise BenchError("tool_not_found", f"Could not run the camera tool: {bun} / {tool_dir}",
+                         ["Check the tool_dir and bun paths in bench.toml [camera]"])
     except subprocess.TimeoutExpired:
-        raise BenchError("camera_failed", "Kamera kaydı zaman aşımına uğradı.",
-                         ["Telefon kilitli veya scrcpy takıldı", "adb devices ile telefonu kontrol et"])
+        raise BenchError("camera_failed", "Camera recording timed out.",
+                         ["The phone is locked or scrcpy is stuck", "Check the phone with adb devices"])
     path = Path(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else None
     if p.returncode != 0 or not path or path.suffix != ".mp4" or not path.is_file():
-        raise BenchError("camera_failed", "Kamera videosu çekilemedi.",
-                         ["Telefon bağlı değil veya USB hata ayıklama izni yok (adb devices)",
-                          "Birden fazla adb cihazı var: bench.toml [camera] serial ver",
-                          "Telefon ekranı kilitli", f"Kamera {cfg.get('camera', 'fps')} fps desteklemiyor"],
+        raise BenchError("camera_failed", "Could not record the camera video.",
+                         ["The phone is not connected or USB debugging is not authorized (adb devices)",
+                          "More than one adb device: set serial in bench.toml [camera]",
+                          "The phone screen is locked", f"The camera does not support {cfg.get('camera', 'fps')} fps"],
                          tail(p.stderr + p.stdout))
     shutil.move(str(path), dest)
     try:
@@ -1117,12 +1117,12 @@ def record_video(cfg: Config, prog: Programmer, seconds: float, dest: Path) -> N
 
 
 def video_frames(video: Path):
-    """(kareler, zaman damgaları sn). Zamanlar ffprobe ile videonun kendi kare zaman damgalarından."""
+    """(frames, timestamps in s). The times come from the video's own frame timestamps via ffprobe."""
     try:
         import cv2
         import numpy as np
     except ImportError:
-        raise BenchError("tool_not_found", "cam_blink için OpenCV ve NumPy gerekli.",
+        raise BenchError("tool_not_found", "cam_blink needs OpenCV and NumPy.",
                          ["sudo apt install python3-opencv python3-numpy"])
     p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                         "frame=best_effort_timestamp_time,pts_time", "-of", "json", str(video)],
@@ -1131,7 +1131,7 @@ def video_frames(video: Path):
         ts = [float(f.get("best_effort_timestamp_time") or f["pts_time"])
               for f in json.loads(p.stdout)["frames"]]
     except (ValueError, KeyError, TypeError):
-        raise BenchError("camera_failed", "Videonun kare zaman damgaları okunamadı (ffprobe).", [], tail(p.stderr))
+        raise BenchError("camera_failed", "Could not read the video frame timestamps (ffprobe).", [], tail(p.stderr))
     cap = cv2.VideoCapture(str(video))
     frames = []
     while True:
@@ -1142,14 +1142,14 @@ def video_frames(video: Path):
     cap.release()
     if len(frames) != len(ts) or len(frames) < 10:
         raise BenchError("camera_failed",
-                         f"Video kareleri ve zaman damgaları uyuşmuyor ({len(frames)} kare, {len(ts)} zaman).",
-                         ["Video bozuk veya çok kısa"])
+                         f"Video frames and timestamps do not match ({len(frames)} frames, {len(ts)} timestamps).",
+                         ["The video is corrupt or too short"])
     return frames, np.array(ts) - ts[0]
 
 
 def find_led_roi(small, scale: float) -> tuple[list[int], list[dict]]:
-    """Kareler boyunca parlaklığı en çok değişen bölgeyi bulur. Tam çözünürlükte [x, y, w, h] ve
-    ilk 3 aday döndürür (yansımalar gibi başka yanıp sönen yerleri görebilmek için)."""
+    """Finds the region whose brightness changes most across the frames. Returns [x, y, w, h] at full
+    resolution and the top 3 candidates (to reveal other blinking spots such as reflections)."""
     import cv2
     import numpy as np
     k = CAM_ROI_SMALL
@@ -1165,7 +1165,7 @@ def find_led_roi(small, scale: float) -> tuple[list[int], list[dict]]:
 
 
 def blink_edges(t, sig, thr: float, hyst: float) -> tuple[list[float], list[float]]:
-    """Histerezisli eşik geçişleri; geçiş anı iki kare arasında doğrusal ara değerle bulunur."""
+    """Threshold crossings with hysteresis; the crossing time is linearly interpolated between two frames."""
     rising, falling = [], []
     state = None
     for i, v in enumerate(sig):
@@ -1195,29 +1195,29 @@ def cam_blink(cfg: Config, prog: Programmer, sess: Session, step: dict) -> str:
     run_dir = sess.run_dir or cfg.runs_dir
     base = f"cam_step{sess.step_no:02d}"
     video = run_dir / f"{base}.mp4"
-    sess.note(f"cam_blink: {secs:g} sn video -> {video.name}")
+    sess.note(f"cam_blink: {secs:g} s video -> {video.name}")
     record_video(cfg, prog, secs, video)
     frames, t = video_frames(video)
 
     h, w = frames[0].shape[:2]
     scale = CAM_SMALL_W / w
-    # Renkten bağımsız parlaklık: kanalların en büyüğü (yeşil, kırmızı, mavi LED aynı şekilde görünür)
+    # Color-independent brightness: the max of the channels (green, red and blue LEDs look the same)
     small = np.stack([cv2.resize(f.max(axis=2), (CAM_SMALL_W, round(h * scale)), interpolation=cv2.INTER_AREA)
                       for f in frames]).astype(np.float32)
-    use = t >= skip  # kameranın pozlama/odak oturması için baştaki kareler atlanır
+    use = t >= skip  # skip the first frames while the camera exposure/focus settles
     fixed_roi = cfg.get("camera", "roi")
     cands = []
     if fixed_roi:
         roi, roi_src = [int(v) for v in fixed_roi], "bench.toml"
     elif steady:
         if not sess.cam_last:
-            raise BenchError("plan_invalid", "steady kontrolü için LED bölgesi bilinmiyor.",
-                             ["Planda önce yanıp sönen bir cam_blink adımı olmalı (bölgeyi o bulur)",
-                              "veya bench.toml [camera] roi = [x, y, w, h] ver"])
-        roi, roi_src = sess.cam_last["roi"], "önceki cam_blink adımı"
+            raise BenchError("plan_invalid", "LED region unknown for the steady check.",
+                             ["The plan needs a blinking cam_blink step first (it finds the region)",
+                              "or set roi = [x, y, w, h] in bench.toml [camera]"])
+        roi, roi_src = sess.cam_last["roi"], "previous cam_blink step"
     else:
         roi, cands = find_led_roi(small[use], scale)
-        roi_src = "otomatik"
+        roi_src = "auto"
     x, y, rw, rh = roi
     sx0, sy0 = max(0, int(x * scale)), max(0, int(y * scale))
     sx1, sy1 = max(sx0 + 1, int(round((x + rw) * scale))), max(sy0 + 1, int(round((y + rh) * scale)))
@@ -1229,7 +1229,7 @@ def cam_blink(cfg: Config, prog: Programmer, sess: Session, step: dict) -> str:
     contrast = hi_lvl - lo_lvl
 
     np.savetxt(run_dir / f"{base}.csv", np.column_stack([t, sig_all]), fmt="%.4f", delimiter=",",
-               header="t_s,parlaklik", comments="")
+               header="t_s,brightness", comments="")
     mark = frames[int(np.argmax(np.where(use, sig_all, -1)))].copy()
     cv2.rectangle(mark, (x, y), (x + rw, y + rh), (0, 0, 255), 3)
     for c in cands[1:]:
@@ -1239,75 +1239,75 @@ def cam_blink(cfg: Config, prog: Programmer, sess: Session, step: dict) -> str:
         cv2.putText(mark, label, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3)
         cv2.imwrite(str(run_dir / f"{base}_roi.jpg"), mark)
 
-    where = f"bölge {roi} ({roi_src}), {len(tt)} kare, {fps:.1f} fps"
-    files = f"video {video.name}, işaretli kare {base}_roi.jpg"
+    where = f"region {roi} ({roi_src}), {len(tt)} frames, {fps:.1f} fps"
+    files = f"video {video.name}, marked frame {base}_roi.jpg"
 
     if steady:
         prev = sess.cam_last
         thr = prev["threshold"] if prev and roi == prev["roi"] else None
         if thr is None:
-            raise BenchError("plan_invalid", "steady kontrolü için açık/kapalı eşiği bilinmiyor.",
-                             ["Aynı bölgede önce yanıp sönen bir cam_blink adımı olmalı"])
+            raise BenchError("plan_invalid", "On/off threshold unknown for the steady check.",
+                             ["A blinking cam_blink step on the same region must come first"])
         hyst = 0.1 * prev["contrast"]
         rising, falling = blink_edges(tt, sig, thr, hyst)
         level = float(np.median(sig))
         is_on = level > thr
         save_mark(f"steady {'ON' if is_on else 'OFF'}? level {level:.0f} thr {thr:.0f}")
-        msg = (f"seviye {level:.0f} (eşik {thr:.0f}, önceki açık/kapalı {prev['hi']:.0f}/{prev['lo']:.0f}), "
-               f"{len(rising) + len(falling)} geçiş; {where}; {files}")
+        msg = (f"level {level:.0f} (threshold {thr:.0f}, previous on/off {prev['hi']:.0f}/{prev['lo']:.0f}), "
+               f"{len(rising) + len(falling)} transitions; {where}; {files}")
         if rising or falling:
-            raise BenchError("value_out_of_range", f"LED sabit olmalıydı ama {len(rising) + len(falling)} geçiş var: {msg}",
-                             ["LED hâlâ yanıp sönüyor (heartbeat kapanmadı)", "Kamerada titreşim veya ışık değişimi"])
+            raise BenchError("value_out_of_range", f"LED should be steady but has {len(rising) + len(falling)} transitions: {msg}",
+                             ["The LED is still blinking (heartbeat not stopped)", "Camera shake or a lighting change"])
         if is_on != (steady == "on"):
             raise BenchError("value_out_of_range",
-                             f"LED sabit {'AÇIK' if steady == 'on' else 'KAPALI'} olmalıydı, "
-                             f"ölçülen {'açık' if is_on else 'kapalı'}: {msg}",
-                             ["LED komutu uygulanmadı", "LED bölgesi yanlış (işaretli kareye bak)"])
-        return f"LED sabit {'açık' if is_on else 'kapalı'}: {msg}"
+                             f"LED should be steady {'ON' if steady == 'on' else 'OFF'}, "
+                             f"measured {'on' if is_on else 'off'}: {msg}",
+                             ["The LED command was not applied", "Wrong LED region (see the marked frame)"])
+        return f"LED steady {'on' if is_on else 'off'}: {msg}"
 
     if contrast < CAM_MIN_CONTRAST:
         save_mark(f"no blink, contrast {contrast:.0f}")
         raise BenchError("no_blink_detected",
-                         f"LED bölgesinde yanıp sönme yok (kontrast {contrast:.0f} < {CAM_MIN_CONTRAST}); {where}; {files}.",
-                         ["LED yanıp sönmüyor (kart donmuş veya LED sabit)", "Telefon karta bakmıyor (işaretli kareye bak)",
-                          "LED bölgesi yanlış: bench.toml [camera] roi ile sabitle"])
+                         f"No blinking in the LED region (contrast {contrast:.0f} < {CAM_MIN_CONTRAST}); {where}; {files}.",
+                         ["The LED is not blinking (board hung or LED steady)", "The phone is not facing the board (see the marked frame)",
+                          "Wrong LED region: pin it with roi in bench.toml [camera]"])
     thr = (lo_lvl + hi_lvl) / 2
     rising, falling = blink_edges(tt, sig, thr, 0.1 * contrast)
     fr, ff = edge_freq(rising), edge_freq(falling)
     if fr is None and ff is None:
         save_mark(f"edges {len(rising)}/{len(falling)}")
         raise BenchError("no_blink_detected",
-                         f"Frekans için yeterli geçiş yok (yükselen {len(rising)}, düşen {len(falling)}); {where}; {files}.",
-                         ["Kayıt süresi çok kısa: seconds'u artır", "LED çok yavaş yanıp sönüyor"])
-    # İki kenar türünün periyot sayısıyla ağırlıklı ortalaması
+                         f"Not enough transitions for a frequency (rising {len(rising)}, falling {len(falling)}); {where}; {files}.",
+                         ["Recording too short: increase seconds", "The LED blinks too slowly"])
+    # Average of the two edge types, weighted by their period counts
     n_r, n_f = max(len(rising) - 1, 0), max(len(falling) - 1, 0)
     freq = ((fr or 0) * n_r + (ff or 0) * n_f) / (n_r + n_f)
-    # Doluluk: her yükselen kenardan sonraki düşen kenara kadar açık süre / periyot
+    # Duty: on time from each rising edge to the next falling edge / period
     ons = [next(f for f in falling if f > r) - r for r in rising if any(f > r for f in falling)]
     duty = float(np.mean(ons)) * freq if ons else None
     sess.cam_last = {"roi": roi, "threshold": thr, "contrast": contrast, "hi": hi_lvl, "lo": lo_lvl}
     save_mark(f"{freq:.3f} Hz duty {duty:.2f}" if duty is not None else f"{freq:.3f} Hz")
 
     lo, hi = step["range"]
-    duty_txt = f"doluluk {duty:.2f}" if duty is not None else "doluluk ölçülemedi"
-    msg = (f"{freq:.3f} Hz, {duty_txt} (yükselen {len(rising)}, düşen {len(falling)} kenar, "
-           f"kontrast {contrast:.0f}); {where}; {files}")
+    duty_txt = f"duty {duty:.2f}" if duty is not None else "duty not measurable"
+    msg = (f"{freq:.3f} Hz, {duty_txt} (rising {len(rising)}, falling {len(falling)} edges, "
+           f"contrast {contrast:.0f}); {where}; {files}")
     if cands:
-        msg += "; adaylar " + ", ".join(f"({c['x']},{c['y']}) std {c['std']}" for c in cands)
+        msg += "; candidates " + ", ".join(f"({c['x']},{c['y']}) std {c['std']}" for c in cands)
     warn = ""
     if freq > fps / 4:
-        warn = (f"UYARI: frekans kare hızının dörtte birinden ({fps / 4:.1f} Hz) büyük; "
-                f"periyot başına {fps / freq:.1f} kare, ölçüm güvenilmez. ")
+        warn = (f"WARNING: frequency above a quarter of the frame rate ({fps / 4:.1f} Hz); "
+                f"{fps / freq:.1f} frames per period, measurement unreliable. ")
     if not lo <= freq <= hi:
-        raise BenchError("value_out_of_range", f"{warn}frekans {freq:.3f} Hz beklenen aralık [{lo}, {hi}] dışında: {msg}",
-                         ["Firmware'in yanıp sönme hızı veya saati yanlış",
-                          "Yanlış bölge ölçülüyor: işaretli kareye bak, gerekirse bench.toml [camera] roi",
-                          "Kare hızı yetersiz (örnekleme hatası)"])
+        raise BenchError("value_out_of_range", f"{warn}frequency {freq:.3f} Hz outside the expected range [{lo}, {hi}]: {msg}",
+                         ["The firmware's blink rate or clock is wrong",
+                          "Measuring the wrong region: see the marked frame; if needed set roi in bench.toml [camera]",
+                          "Frame rate too low (sampling error)"])
     drng = step.get("duty_range")
     if drng and (duty is None or not drng[0] <= duty <= drng[1]):
-        raise BenchError("value_out_of_range", f"{warn}doluluk {duty_txt}, beklenen [{drng[0]}, {drng[1]}]: {msg}",
-                         ["LED açık/kapalı süreleri firmware'de farklı", "Kamera pozlama süresi açık süreyi uzatıyor"])
-    return f"{warn}{msg} ([{lo}, {hi}] Hz aralığında)"
+        raise BenchError("value_out_of_range", f"{warn}{duty_txt}, expected [{drng[0]}, {drng[1]}]: {msg}",
+                         ["The LED on/off times differ in the firmware", "The camera exposure time lengthens the on time"])
+    return f"{warn}{msg} (within [{lo}, {hi}] Hz)"
 
 
 def recover_board(cfg: Config, prog: Programmer, sess: Session) -> dict:
@@ -1339,19 +1339,19 @@ def recover_board(cfg: Config, prog: Programmer, sess: Session) -> dict:
 
 
 def mutate_plan(plan: dict) -> tuple[dict, int | None]:
-    """Son 'beklenti' adımını asla eşleşmeyecek hale getirir (negatif kontrol)."""
+    """Makes the last 'expectation' step impossible to match (negative check)."""
     plan = json.loads(json.dumps(plan))
     for i in range(len(plan["step"]) - 1, -1, -1):
         s = plan["step"][i]
         if s["action"] == "clock_check":
-            s["range"] = [-2.0, -1.0]  # oran asla negatif olamaz
+            s["range"] = [-2.0, -1.0]  # the ratio can never be negative
             s["seconds"] = min(float(s["seconds"]), 1.0)
             return plan, i + 1
         if s["action"] == "cam_blink":
             if s.get("steady"):
-                s["steady"] = "off" if s["steady"] == "on" else "on"  # tersini bekle
+                s["steady"] = "off" if s["steady"] == "on" else "on"  # expect the opposite
             else:
-                s["range"] = [-2.0, -1.0]  # frekans asla negatif olamaz
+                s["range"] = [-2.0, -1.0]  # the frequency can never be negative
             return plan, i + 1
         key = "pattern" if s["action"] == "expect" else ("expect" if s["action"] == "send" and s.get("expect") else None)
         if key:
@@ -1373,13 +1373,13 @@ def file_sha256(path: Path) -> str:
 
 
 def probe_serial(cfg: Config) -> str:
-    """ST-Link seri numarası: bench.toml'dan, yoksa Linux'ta sysfs'ten."""
+    """ST-Link serial number: from bench.toml, otherwise from sysfs on Linux."""
     if cfg.get("probe", "backend") == "sim":
         return "sim"
     if cfg.get("probe", "serial_number"):
         return str(cfg.get("probe", "serial_number"))
     if IS_WIN or not Path("/sys/bus/usb/devices").exists():
-        return "bilinmiyor (bench.toml [probe] serial_number ile ver)"
+        return "unknown (set serial_number in bench.toml [probe])"
     found = []
     for d in Path("/sys/bus/usb/devices").iterdir():
         try:
@@ -1389,13 +1389,13 @@ def probe_serial(cfg: Config) -> str:
             raw = (d / "serial").read_text(encoding="utf-8", errors="replace").strip("\n")
         except OSError:
             continue
-        # ST-Link V2 seri numarasını ham bayt olarak verir; OpenOCD gibi onaltılık yaz
+        # ST-Link V2 reports its serial number as raw bytes; write it as hex like OpenOCD does
         if not raw.isalnum() and all(ord(c) < 256 for c in raw):
             raw = "".join(f"{ord(c):02X}" for c in raw)
         found.append(raw)
     if not found:
-        return "bulunamadı"
-    return ", ".join(sorted(found)) + (" (birden fazla ST-Link takılı)" if len(found) > 1 else "")
+        return "not found"
+    return ", ".join(sorted(found)) + (" (more than one ST-Link connected)" if len(found) > 1 else "")
 
 
 def plan_images(cfg: Config, plan: dict) -> list[Path]:
@@ -1425,19 +1425,19 @@ def run_metadata_start(cfg: Config, plan: dict, prog: Programmer) -> dict:
 
 
 def read_uid_for_report(prog: Programmer, sess: Session) -> dict:
-    """Önce debug portundan (mem 0x1FFF7A10), olmazsa seri porttaki UID cevabından."""
+    """From the debug port first (mem 0x1FFF7A10), otherwise from the UID reply on the serial port."""
     seen = next((txt.split()[1] for _, d, txt in reversed(sess.transcript)
                  if d == "<" and re.fullmatch(r"UID [0-9A-F]{24}", txt)), None)
     try:
         uid = prog.read_uid()
-        src = f"debug portu, mem 0x{UID_ADDR:08X}"
+        src = f"debug port, mem 0x{UID_ADDR:08X}"
         if seen:
-            src += ", seri porttaki UID ile aynı" if seen == uid else f", UYARI: seri port farklı ({seen})"
+            src += ", same as the UID on the serial port" if seen == uid else f", WARNING: serial port differs ({seen})"
         return {"uid": uid, "source": src}
     except BenchError as e:
         if seen:
-            return {"uid": seen, "source": "seri port UID komutu"}
-        return {"uid": None, "source": f"okunamadı: {e.summary}"}
+            return {"uid": seen, "source": "serial port UID command"}
+        return {"uid": None, "source": f"unreadable: {e.summary}"}
 
 
 def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "",
@@ -1485,8 +1485,8 @@ def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "
     ok = failed is None
     result = {
         "ok": ok, "command": "run", "plan": name, "plan_file": str(plan_path),
-        "summary": (f"{name}: {len(results)}/{len(plan['step'])} adım geçti." if ok else
-                    f"{name}: {results[-1]['step']}. adımda başarısız: {failed.summary}"),
+        "summary": (f"{name}: {len(results)}/{len(plan['step'])} steps passed." if ok else
+                    f"{name}: failed at step {results[-1]['step']}: {failed.summary}"),
         "duration_s": round(time.monotonic() - t_start, 2),
         "steps": results, "recovery": recovery, "report_dir": str(run_dir), "meta": meta,
     }
@@ -1499,54 +1499,54 @@ def execute_plan(cfg: Config, plan_path: Path, plan: dict, board, label: str = "
     return result
 
 
-AUDIT_PENDING = "- Denetim kaydı hash: (henüz yazılmadı)"
+AUDIT_PENDING = "- Audit log hash: (not written yet)"
 
 
 def write_report_md(run_dir: Path, r: dict, plan: dict) -> None:
     m = r["meta"]
-    L = [f"# Test raporu: {r['plan']}", "",
-         f"- Sonuç: **{'PASS' if r['ok'] else 'FAIL'}**",
-         f"- Başlangıç: {m['started'].replace('T', ' ')}",
-         f"- Bitiş: {m['finished'].replace('T', ' ')}",
-         f"- Süre: {r['duration_s']} sn",
-         f"- Plan dosyası: `{r['plan_file']}`"]
+    L = [f"# Test report: {r['plan']}", "",
+         f"- Result: **{'PASS' if r['ok'] else 'FAIL'}**",
+         f"- Started: {m['started'].replace('T', ' ')}",
+         f"- Finished: {m['finished'].replace('T', ' ')}",
+         f"- Duration: {r['duration_s']} s",
+         f"- Plan file: `{r['plan_file']}`"]
     if m.get("operator"):
-        L.insert(3, f"- Operatör: {m['operator']}")
+        L.insert(3, f"- Operator: {m['operator']}")
     if plan.get("description"):
-        L.append(f"- Açıklama: {plan['description']}")
-    L += ["", "## Ortam", ""]
+        L.append(f"- Description: {plan['description']}")
+    L += ["", "## Environment", ""]
     if not m["firmware"]:
-        L.append("- Firmware: bu planda yükleme yok")
+        L.append("- Firmware: this plan does not flash")
     for fw in m["firmware"]:
         L.append(f"- Firmware: `{fw['path']}`")
-        L.append(f"  - SHA-256: `{fw['sha256'] or 'dosya yok'}`")
-    L += [f"- Kart UID: `{m['uid'] or '-'}` ({m['source']})",
-          f"- ST-Link seri no: `{m['probe_serial']}`",
-          f"- bench.py: {m['bench_version']} (dosya SHA-256 `{m['bench_sha256'][:16]}…`)",
+        L.append(f"  - SHA-256: `{fw['sha256'] or 'no file'}`")
+    L += [f"- Board UID: `{m['uid'] or '-'}` ({m['source']})",
+          f"- ST-Link serial no: `{m['probe_serial']}`",
+          f"- bench.py: {m['bench_version']} (file SHA-256 `{m['bench_sha256'][:16]}…`)",
           f"- {m['programmer']}: {m['programmer_version']}",
-          f"- Sunucu: {m['host']}",
+          f"- Host: {m['host']}",
           AUDIT_PENDING]
-    L += ["", "| # | Adım | Sonuç | Açıklama | Süre (sn) |", "|---|---|---|---|---|"]
+    L += ["", "| # | Step | Result | Summary | Duration (s) |", "|---|---|---|---|---|"]
     for s in r["steps"]:
         summ = str(s["summary"]).replace("|", "\\|")
         L.append(f"| {s['step']} | {s['name']} | {'PASS' if s['ok'] else 'FAIL'} | {summ} | {s['duration_s']} |")
     if not r["ok"]:
-        L += ["", "## Hata", "", f"- Tür: `{r.get('error_type')}`"]
+        L += ["", "## Error", "", f"- Type: `{r.get('error_type')}`"]
         for c in r.get("likely_causes", []):
-            L.append(f"- Olası sebep: {c}")
+            L.append(f"- Likely cause: {c}")
         if r.get("details"):
             L += ["", "```", str(r["details"]), "```"]
     rec = r.get("recovery", {})
     if rec.get("attempted"):
-        L += ["", "## Kurtarma", "", f"- Sonuç: {'kart kurtarıldı' if rec['ok'] else 'KURTARILAMADI, insan müdahalesi gerekli'}"]
+        L += ["", "## Recovery", "", f"- Result: {'board recovered' if rec['ok'] else 'NOT RECOVERED, a human must step in'}"]
         for a in rec["actions"]:
-            L.append(f"- {a['action']}: {'OK' if a['ok'] else 'başarısız'} {a.get('line') or a.get('error') or ''}")
-    L += ["", "Seri port dökümü: `serial.log`"]
+            L.append(f"- {a['action']}: {'OK' if a['ok'] else 'failed'} {a.get('line') or a.get('error') or ''}")
+    L += ["", "Serial transcript: `serial.log`"]
     (run_dir / "report.md").write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
-# Komutlar
+# Commands
 # ---------------------------------------------------------------------------
 
 def cmd_run(cfg, args, board) -> dict:
@@ -1556,34 +1556,34 @@ def cmd_run(cfg, args, board) -> dict:
         return r1
     mplan, mstep = mutate_plan(plan)
     if mstep is None:
-        r1["negative_check"] = {"ok": False, "summary": "Planda beklenti adımı yok; negatif kontrol yapılamadı."}
+        r1["negative_check"] = {"ok": False, "summary": "The plan has no expectation step; the negative check could not be run."}
         r1["ok"] = False
         r1["error_type"] = "test_cannot_fail"
-        r1["summary"] += " Ama planda hiçbir beklenti yok, bu test hiçbir şeyi kanıtlamaz."
+        r1["summary"] += " But the plan has no expectations, so this test proves nothing."
         return r1
     if board is not None:
         board.out.clear()
-    r2 = execute_plan(cfg, plan_path, mplan, board, label="_negatif")
+    r2 = execute_plan(cfg, plan_path, mplan, board, label="_negative")
     neg = {"mutated_step": mstep, "report_dir": r2["report_dir"], "failed_as_expected": not r2["ok"],
            "recovery_ok": r2["recovery"].get("ok")}
     r1["negative_check"] = neg
     if r2["ok"]:
         r1.update(ok=False, error_type="test_cannot_fail",
-                  summary=f"{r1['plan']}: bilerek bozulan beklentiyle de GEÇTİ. Bu test hiçbir şeyi ölçmüyor.",
-                  likely_causes=["Tezgah başarısız bir beklentiyi FAIL olarak raporlamıyor (bench.py hatası)",
-                                 "Bozulan adım hiç çalışmıyor"])
+                  summary=f"{r1['plan']}: PASSED even with a deliberately broken expectation. This test measures nothing.",
+                  likely_causes=["The bench does not report a failed expectation as FAIL (bench.py bug)",
+                                 "The broken step never runs"])
     else:
-        r1["summary"] += f" Negatif kontrol: {mstep}. adım bozulunca beklendiği gibi FAIL verdi."
+        r1["summary"] += f" Negative check: with step {mstep} broken it FAILED as expected."
     return r1
 
 
 def cmd_flash(cfg, args, board) -> dict:
-    check_permission(cfg, "allow_flash", "Yükleme")
+    check_permission(cfg, "allow_flash", "Flash")
     image = Path(args.image)
     if not image.is_absolute() and not image.exists():
-        image = cfg.resolve(image)  # planlardaki gibi: bulunamazsa bench.toml'un klasörüne göre
+        image = cfg.resolve(image)  # as in plans: if not found, relative to bench.toml's folder
     if not image.is_file():
-        raise BenchError("image_not_found", f"{image} bulunamadı.", ["Önce derle: python firmware/build.py"])
+        raise BenchError("image_not_found", f"{image} not found.", ["Build it first: python firmware/build.py"])
     msg = make_programmer(cfg, board).flash(image, under_reset=args.under_reset)
     return ok_result("flash", msg, image=str(image.resolve()))
 
@@ -1601,10 +1601,10 @@ def cmd_reset(cfg, args, board) -> dict:
     finally:
         sess.close()
     if not m:
-        raise BenchError("expect_timeout", f"Reset sonrası {args.timeout:g} sn içinde /{args.expect}/ gelmedi.",
-                         ["Firmware açılışta çöküyor", "Seri bağlantı/baud hatası"],
-                         "Gelen satırlar:\n" + ("\n".join(seen) or "(hiç yok)"))
-    return ok_result("reset", f"Kart resetlendi, açılış: {line}", lines=seen)
+        raise BenchError("expect_timeout", f"No /{args.expect}/ within {args.timeout:g} s after reset.",
+                         ["The firmware crashes at boot", "Serial connection/baud problem"],
+                         "Received lines:\n" + ("\n".join(seen) or "(none)"))
+    return ok_result("reset", f"Board reset, boot line: {line}", lines=seen)
 
 
 def cmd_send(cfg, args, board) -> dict:
@@ -1616,20 +1616,20 @@ def cmd_send(cfg, args, board) -> dict:
             m, line, seen = sess.wait_for(args.expect, args.timeout)
             if not m:
                 if sess.last_fault:
-                    raise BenchError("target_crashed", f"'{args.text}' komutundan sonra kart çöktü: {sess.last_fault}",
-                                     ["pc'yi koda çevir: arm-none-eabi-addr2line -f -e firmware.elf <pc>",
-                                      "Kartı geri getir: bench.py reset --expect \"^BOOT\""], sess.recent())
+                    raise BenchError("target_crashed", f"The board crashed after '{args.text}': {sess.last_fault}",
+                                     ["Map the pc to code: arm-none-eabi-addr2line -f -e firmware.elf <pc>",
+                                      "Bring the board back: bench.py reset --expect \"^BOOT\""], sess.recent())
                 raise BenchError("expect_timeout",
-                                 f"'{args.text}' komutuna {args.timeout:g} sn içinde /{args.expect}/ cevabı gelmedi.",
-                                 ["Kart daha önce çökmüş veya donmuş olabilir: 'bench.py reset --expect \"^BOOT\"' dene",
-                                  "TX/RX kabloları ters veya GND bağlı değil"],
-                                 "Son seri trafik:\n" + sess.recent())
+                                 f"No /{args.expect}/ reply to '{args.text}' within {args.timeout:g} s.",
+                                 ["The board may have crashed or hung earlier: try 'bench.py reset --expect \"^BOOT\"'",
+                                  "TX/RX wires swapped, or GND not connected"],
+                                 "Recent serial traffic:\n" + sess.recent())
             good, msg = check_range(m, [args.min, args.max] if args.min is not None else None)
             if not good:
                 raise BenchError("value_out_of_range", f"'{line}': {msg}")
             return ok_result("send", f"'{args.text}' -> '{line}'", response=seen)
         lines = sess.collect(args.timeout)
-        return ok_result("send", f"'{args.text}' gönderildi, {len(lines)} satır cevap.", response=lines)
+        return ok_result("send", f"Sent '{args.text}', {len(lines)} reply lines.", response=lines)
     finally:
         sess.close()
 
@@ -1640,21 +1640,21 @@ def cmd_read(cfg, args, board) -> dict:
         if args.until:
             m, line, seen = sess.wait_for(args.until, args.seconds)
             if not m:
-                raise BenchError("expect_timeout", f"{args.seconds:g} sn içinde /{args.until}/ gelmedi.",
-                                 [], "\n".join(seen) or "(hiç yok)")
-            return ok_result("read", f"Bulundu: {line}", lines=seen)
+                raise BenchError("expect_timeout", f"No /{args.until}/ within {args.seconds:g} s.",
+                                 [], "\n".join(seen) or "(none)")
+            return ok_result("read", f"Found: {line}", lines=seen)
         lines = sess.collect(args.seconds)
-        return ok_result("read", f"{args.seconds:g} sn içinde {len(lines)} satır okundu.", lines=lines)
+        return ok_result("read", f"Read {len(lines)} lines in {args.seconds:g} s.", lines=lines)
     finally:
         sess.close()
 
 
 def cmd_recover(cfg, args, board) -> dict:
-    check_permission(cfg, "allow_flash", "Yükleme")
+    check_permission(cfg, "allow_flash", "Flash")
     golden = cfg.resolve(cfg.get("recovery", "golden_image"))
     if not golden.is_file():
-        raise BenchError("image_not_found", f"Sağlam firmware bulunamadı: {golden}",
-                         ["python firmware/build.py ile derle", "bench.toml [recovery] golden_image yolunu kontrol et"])
+        raise BenchError("image_not_found", f"Golden firmware not found: {golden}",
+                         ["Build it with python firmware/build.py", "Check the golden_image path in bench.toml [recovery]"])
     prog = make_programmer(cfg, board)
     sess = open_session(cfg, board)
     try:
@@ -1662,53 +1662,53 @@ def cmd_recover(cfg, args, board) -> dict:
     finally:
         sess.close()
     if not rec["ok"]:
-        raise BenchError("recovery_failed", "Kart otomatik olarak kurtarılamadı.",
-                         ["Kartın USB kablosunu çıkarıp tak, sonra tekrar dene",
-                          "BOOT0'ı 1 yap, kartı resetle, tekrar dene (sistem bootloader'ı)",
-                          "İnsan müdahalesi gerekli"], json.dumps(rec, ensure_ascii=False, indent=2))
-    return ok_result("recover", "Kart kurtarıldı ve açılış mesajı görüldü.", recovery=rec)
+        raise BenchError("recovery_failed", "The board could not be recovered automatically.",
+                         ["Unplug and replug the board's USB cable, then try again",
+                          "Set BOOT0 to 1, reset the board, try again (system bootloader)",
+                          "A human must step in"], json.dumps(rec, ensure_ascii=False, indent=2))
+    return ok_result("recover", "Board recovered and the boot message was seen.", recovery=rec)
 
 
-# --- Hata ayıklama: sadece okuma (halt-dump, mem) ve insan için gdbserver ---
+# --- Debugging: read-only (halt-dump, mem) and gdbserver for humans ---
 
-# STM32F407 için okunmasına izin verilen bölgeler. Option byte'lar (0x1FFFC000) bilerek dışarıda.
+# Regions allowed to be read on the STM32F407. Option bytes (0x1FFFC000) are deliberately excluded.
 READ_REGIONS = [
     (0x08000000, 0x08100000, "flash"),
     (0x10000000, 0x10010000, "CCM RAM"),
-    (0x1FFF0000, 0x1FFF7A30, "sistem belleği, OTP, UID"),
+    (0x1FFF0000, 0x1FFF7A30, "system memory, OTP, UID"),
     (0x20000000, 0x20020000, "SRAM"),
-    (0x40000000, 0x60000000, "çevre birimleri"),
-    (0xE0000000, 0xE0100000, "Cortex-M çekirdek (SCB, NVIC, SysTick)"),
+    (0x40000000, 0x60000000, "peripherals"),
+    (0xE0000000, 0xE0100000, "Cortex-M core (SCB, NVIC, SysTick)"),
 ]
 MEM_MAX_WORDS = 256
 UID_ADDR = 0x1FFF7A10
 
-SCB_REGS = ["cfsr", "hfsr", "dfsr", "mmfar", "bfar"]  # 0xE000ED28'den itibaren ardışık
+SCB_REGS = ["cfsr", "hfsr", "dfsr", "mmfar", "bfar"]  # consecutive from 0xE000ED28
 CFSR_BITS = {
-    0: "IACCVIOL: yasak adresten komut çalıştırma (MPU)",
-    1: "DACCVIOL: yasak adrese veri erişimi (MPU)",
-    3: "MUNSTKERR: istisna dönüşünde yığın okuma hatası (MPU)",
-    4: "MSTKERR: istisna girişinde yığına yazma hatası (MPU)",
-    5: "MLSPERR: FPU durumu kaydedilirken hata (MPU)",
-    7: "MMARVALID: MMFAR geçerli",
-    8: "IBUSERR: komut okurken bus hatası",
-    9: "PRECISERR: veri erişiminde bus hatası, adres BFAR'da",
-    10: "IMPRECISERR: kesin olmayan bus hatası (pc hatalı komuttan sonrasını gösterebilir)",
-    11: "UNSTKERR: istisna dönüşünde yığın okuma bus hatası",
-    12: "STKERR: istisna girişinde yığın taşması / bus hatası",
-    13: "LSPERR: FPU durumu kaydedilirken bus hatası",
-    15: "BFARVALID: BFAR geçerli",
-    16: "UNDEFINSTR: tanımsız komut (udf, bozuk kod, yanlış adrese atlama)",
-    17: "INVSTATE: geçersiz durum (Thumb biti 0 olan adrese atlama, ör. NULL fonksiyon işaretçisi)",
-    18: "INVPC: geçersiz EXC_RETURN ile dönüş",
-    19: "NOCP: kapalı yardımcı işlemci (FPU açılmadan float kullanımı)",
-    24: "UNALIGNED: hizasız erişim",
-    25: "DIVBYZERO: sıfıra bölme",
+    0: "IACCVIOL: instruction fetch from a forbidden address (MPU)",
+    1: "DACCVIOL: data access to a forbidden address (MPU)",
+    3: "MUNSTKERR: stack read error on exception return (MPU)",
+    4: "MSTKERR: stack write error on exception entry (MPU)",
+    5: "MLSPERR: error while saving FPU state (MPU)",
+    7: "MMARVALID: MMFAR is valid",
+    8: "IBUSERR: bus error on instruction fetch",
+    9: "PRECISERR: bus error on data access, address in BFAR",
+    10: "IMPRECISERR: imprecise bus error (pc may point past the faulting instruction)",
+    11: "UNSTKERR: bus error reading the stack on exception return",
+    12: "STKERR: stack overflow / bus error on exception entry",
+    13: "LSPERR: bus error while saving FPU state",
+    15: "BFARVALID: BFAR is valid",
+    16: "UNDEFINSTR: undefined instruction (udf, corrupt code, jump to a wrong address)",
+    17: "INVSTATE: invalid state (jump to an address with the Thumb bit 0, e.g. a NULL function pointer)",
+    18: "INVPC: return with an invalid EXC_RETURN",
+    19: "NOCP: coprocessor disabled (float used before enabling the FPU)",
+    24: "UNALIGNED: unaligned access",
+    25: "DIVBYZERO: division by zero",
 }
-HFSR_BITS = {1: "VECTTBL: vektör tablosu okunamadı",
-             30: "FORCED: yapılandırılabilir bir hata HardFault'a yükseltildi (CFSR'ye bak)",
-             31: "DEBUGEVT: debug olayı"}
-EXC_NAMES = {0: "thread (normal kod)", 2: "NMI", 3: "HardFault", 4: "MemManage", 5: "BusFault",
+HFSR_BITS = {1: "VECTTBL: could not read the vector table",
+             30: "FORCED: a configurable fault was escalated to HardFault (see CFSR)",
+             31: "DEBUGEVT: debug event"}
+EXC_NAMES = {0: "thread (normal code)", 2: "NMI", 3: "HardFault", 4: "MemManage", 5: "BusFault",
              6: "UsageFault", 11: "SVCall", 14: "PendSV", 15: "SysTick"}
 
 
@@ -1716,7 +1716,7 @@ def parse_int(text: str) -> int:
     try:
         return int(text, 0)
     except ValueError:
-        raise BenchError("bad_argument", f"Sayı anlaşılamadı: {text!r}", ["0x ile onaltılık veya ondalık yaz"])
+        raise BenchError("bad_argument", f"Not a number: {text!r}", ["Write hex with 0x, or decimal"])
 
 
 def is_code_addr(v: int) -> bool:
@@ -1724,7 +1724,7 @@ def is_code_addr(v: int) -> bool:
 
 
 def parse_mdw(out: str) -> list[tuple[int, int]]:
-    """OpenOCD 'mdw' çıktısını (adres, değer) listesine çevirir."""
+    """Turns OpenOCD 'mdw' output into a list of (address, value)."""
     words = []
     for m in re.finditer(r"^0x([0-9a-fA-F]+):((?: [0-9a-fA-F]{8})+)", out, re.M):
         base = int(m.group(1), 16)
@@ -1747,29 +1747,29 @@ def symbols_elf(cfg: Config, args) -> Path:
 
 
 def cmd_halt_dump(cfg, args, board) -> dict:
-    """Çekirdeği durdurur, register'ları, hata register'larını ve yığını okur, sonra devam ettirir."""
+    """Halts the core, reads the registers, fault registers and stack, then resumes."""
     prog = make_programmer(cfg, board)
     n_stack = 48
     out = prog.debug_commands([
         "halt",
         "echo @@REGS", "reg",
         "echo @@SCB", "mdw 0xE000ED28 5",
-        # SRAM sonunu (0x20020000) aşmadan oku; sp bozuksa hata versin ama gerisi devam etsin
+        # read without going past the end of SRAM (0x20020000); if sp is bad let it fail but continue with the rest
         "echo @@STACK",
         "set _sp [lindex [regexp -inline {0x[0-9a-fA-F]+} [reg sp]] 0]; "
         f"set _n {n_stack}; "
         "if {$_sp >= 0x20000000 && $_sp < 0x20020000 && (0x20020000 - $_sp) / 4 < $_n} "
         "{ set _n [expr {(0x20020000 - $_sp) / 4}] }; "
-        # catch içindeki çıktı ekrana basılmaz, sonuç olarak döner; echo ile basıyoruz
+        # output inside catch is not printed but returned as the result; we print it with echo
         "if {$_n > 0 && [catch { mdw $_sp $_n } _r] == 0} { echo $_r }",
         *([] if args.keep_halted else ["resume"]),
     ])
     sections = dict(re.findall(r"@@(\w+)\n(.*?)(?=@@\w+\n|\Z)", out, re.S))
     regs = parse_regs(sections.get("REGS", ""))
     if "pc" not in regs:
-        raise BenchError("tool_error", "Register'lar okunamadı.", ["Çekirdek durdurulamamış olabilir"], tail(out))
+        raise BenchError("tool_error", "Could not read the registers.", ["The core may not have halted"], tail(out))
     scb = dict(zip(SCB_REGS, (v for _, v in parse_mdw(sections.get("SCB", "")))))
-    # Adres register'ları sadece CFSR'deki VALID biti 1 ise anlamlı
+    # The address registers are meaningful only if their VALID bit in CFSR is 1
     if not scb.get("cfsr", 0) & (1 << 7):
         scb.pop("mmfar", None)
     if not scb.get("cfsr", 0) & (1 << 15):
@@ -1779,8 +1779,8 @@ def cmd_halt_dump(cfg, args, board) -> dict:
     elf = symbols_elf(cfg, args)
     exc = regs.get("xPSR", 0) & 0x1FF
 
-    # İstisna içindeysek yığında EXC_RETURN (0xFFFFFFxx) arayıp donanımın kaydettiği çerçeveyi bul:
-    # hemen arkasından r0 r1 r2 r3 r12 lr pc xpsr gelir (handler LR'yi en son itip sakladıysa).
+    # If inside an exception, look for EXC_RETURN (0xFFFFFFxx) on the stack to find the hardware-stacked frame:
+    # r0 r1 r2 r3 r12 lr pc xpsr follow right after it (if the handler pushed LR last).
     frame = None
     if exc:
         for i, (_, v) in enumerate(stack):
@@ -1791,9 +1791,9 @@ def cmd_halt_dump(cfg, args, board) -> dict:
                     frame["found_at"] = stack[i + 1][0]
                     break
 
-    candidates = [v for _, v in stack if is_code_addr(v) and v & 1]  # Thumb dönüş adresleri
+    candidates = [v for _, v in stack if is_code_addr(v) and v & 1]  # Thumb return addresses
     want = [regs["pc"], regs.get("lr", 0) & ~1] + ([frame["pc"], frame["lr"] & ~1] if frame else []) + \
-           [(v & ~1) - 2 for v in candidates]  # dönüş adresinin 2 byte gerisi = çağıran komut
+           [(v & ~1) - 2 for v in candidates]  # 2 bytes before the return address = the calling instruction
     syms = addr2line(elf, [a for a in want if is_code_addr(a)])
 
     def h(v):
@@ -1810,12 +1810,12 @@ def cmd_halt_dump(cfg, args, board) -> dict:
         if loc and (not chain or chain[-1]["at"] != loc):
             chain.append({"value": h(v), "at": loc})
 
-    where = syms.get(regs["pc"], "sembol yok")
-    exc_name = EXC_NAMES.get(exc, f"IRQ{exc - 16}" if exc >= 16 else f"istisna {exc}")
-    summary = f"Çekirdek {exc_name} içinde, pc={h(regs['pc'])} ({where})."
+    where = syms.get(regs["pc"], "no symbol")
+    exc_name = EXC_NAMES.get(exc, f"IRQ{exc - 16}" if exc >= 16 else f"exception {exc}")
+    summary = f"Core in {exc_name}, pc={h(regs['pc'])} ({where})."
     if frame:
-        summary += f" Çökme anı: pc={h(frame['pc'])} ({syms.get(frame['pc'], 'sembol yok')})."
-    summary += " Çekirdek durdurulmuş halde bırakıldı." if args.keep_halted else " Çekirdek devam ettirildi."
+        summary += f" At the crash: pc={h(frame['pc'])} ({syms.get(frame['pc'], 'no symbol')})."
+    summary += " Core left halted." if args.keep_halted else " Core resumed."
 
     r = ok_result("halt-dump", summary, exception=exc_name, registers=result_regs,
                   pc_at=syms.get(regs["pc"]), lr_at=syms.get(regs.get("lr", 0) & ~1),
@@ -1833,13 +1833,13 @@ def cmd_halt_dump(cfg, args, board) -> dict:
         for e in explain:
             print(f"    - {e}")
         if frame:
-            print(f"  Kaydedilmiş çerçeve: pc={h(frame['pc'])} {r['stacked_frame']['pc_at'] or ''}"
+            print(f"  Stacked frame: pc={h(frame['pc'])} {r['stacked_frame']['pc_at'] or ''}"
                   f"  lr={h(frame['lr'])} {r['stacked_frame']['lr_at'] or ''}")
         if chain:
-            print("  Yığındaki kod adresleri (olası çağrı zinciri, yukarıdan aşağı):")
+            print("  Code addresses on the stack (likely call chain, top down):")
             for c in chain:
                 print(f"    {c['value']}  {c['at']}")
-        print(f"  Semboller: {elf}  (kartta başka firmware varsa isimler yanlış olur)")
+        print(f"  Symbols: {elf}  (names are wrong if the board runs other firmware)")
     return r
 
 
@@ -1847,37 +1847,37 @@ def cmd_mem(cfg, args, board) -> dict:
     addr = parse_int(args.addr)
     count = args.count
     if addr % 4:
-        raise BenchError("bad_argument", f"Adres 4'e bölünmeli: 0x{addr:08X}")
+        raise BenchError("bad_argument", f"The address must be a multiple of 4: 0x{addr:08X}")
     if not 1 <= count <= MEM_MAX_WORDS:
-        raise BenchError("bad_argument", f"--count 1 ile {MEM_MAX_WORDS} arasında olmalı.")
+        raise BenchError("bad_argument", f"--count must be between 1 and {MEM_MAX_WORDS}.")
     end = addr + 4 * count
     region = next((r for r in READ_REGIONS if r[0] <= addr and end <= r[1]), None)
     if not region:
-        raise BenchError("permission_denied", f"0x{addr:08X}-0x{end - 1:08X} izin verilen bölgelerin dışında.",
-                         ["İzinli: " + ", ".join(f"{n} 0x{a:08X}-0x{b - 1:08X}" for a, b, n in READ_REGIONS)])
+        raise BenchError("permission_denied", f"0x{addr:08X}-0x{end - 1:08X} is outside the allowed regions.",
+                         ["Allowed: " + ", ".join(f"{n} 0x{a:08X}-0x{b - 1:08X}" for a, b, n in READ_REGIONS)])
     prog = make_programmer(cfg, board)
-    # Çekirdek durdurulmaz; ST-Link çalışırken de belleği okuyabilir.
+    # The core is not halted; ST-Link can read memory while it runs.
     words = parse_mdw(prog.debug_commands([f"mdw 0x{addr:08X} {count}"]))
     if len(words) != count:
-        raise BenchError("tool_error", f"{count} kelime istendi, {len(words)} okundu.",
-                         ["Bu adreste bellek yok (bus hatası); STM32F407 referans kılavuzundaki bellek haritasına bak"])
+        raise BenchError("tool_error", f"Asked for {count} words, read {len(words)}.",
+                         ["No memory at this address (bus error); see the memory map in the STM32F407 reference manual"])
     if not args.json:
         for i in range(0, len(words), 4):
             row = words[i:i + 4]
             print(f"  0x{row[0][0]:08X}:  " + " ".join(f"{v:08X}" for _, v in row))
-    return ok_result("mem", f"0x{addr:08X} adresinden {count} kelime okundu ({region[2]}).",
+    return ok_result("mem", f"Read {count} words from 0x{addr:08X} ({region[2]}).",
                      words=[{"addr": f"0x{a:08X}", "value": f"0x{v:08X}"} for a, v in words])
 
 
 def cmd_gdbserver(cfg, args, board) -> dict:
-    """İnsan için: OpenOCD GDB sunucusunu açar, Ctrl+C'ye kadar tezgahı kilitli tutar."""
+    """For humans: starts the OpenOCD GDB server and keeps the bench locked until Ctrl+C."""
     prog = make_programmer(cfg, board)
     if not hasattr(prog, "gdb_server_cmd"):
-        raise BenchError("not_supported", "gdbserver sadece openocd backend'inde var.")
+        raise BenchError("not_supported", "gdbserver is only available with the openocd backend.")
     elf = symbols_elf(cfg, args)
-    print(f"GDB sunucusu localhost:{args.port} üzerinde açılıyor. Kapatmak için Ctrl+C.")
-    print(f"Başka bir terminalde:  gdb-multiarch {elf} -ex 'target extended-remote :{args.port}'")
-    print("(gdb-multiarch yoksa: sudo apt install gdb-multiarch)\n", flush=True)
+    print(f"Starting the GDB server on localhost:{args.port}. Press Ctrl+C to stop.")
+    print(f"In another terminal:  gdb-multiarch {elf} -ex 'target extended-remote :{args.port}'")
+    print("(if gdb-multiarch is missing: sudo apt install gdb-multiarch)\n", flush=True)
     p = subprocess.Popen(prog.gdb_server_cmd(args.port))
     try:
         rc = p.wait()
@@ -1887,17 +1887,17 @@ def cmd_gdbserver(cfg, args, board) -> dict:
             p.wait(5)
         except subprocess.TimeoutExpired:
             p.kill()
-        return ok_result("gdbserver", "GDB sunucusu kapatıldı.")
+        return ok_result("gdbserver", "GDB server stopped.")
     if rc != 0:
-        raise BenchError("tool_error", f"openocd hata kodu {rc}", ["Yukarıdaki openocd çıktısına bak"])
-    return ok_result("gdbserver", "GDB sunucusu kapandı.")
+        raise BenchError("tool_error", f"openocd exit code {rc}", ["See the openocd output above"])
+    return ok_result("gdbserver", "GDB server exited.")
 
 
 def list_ports() -> list[dict]:
     try:
         from serial.tools import list_ports as lp
     except ImportError:
-        raise BenchError("pyserial_missing", "pyserial kurulu değil.",
+        raise BenchError("pyserial_missing", "pyserial is not installed.",
                          ["Windows: py -m pip install pyserial", "Linux: sudo apt install python3-serial"])
     return [{"device": p.device, "description": p.description, "hwid": p.hwid} for p in lp.comports()]
 
@@ -1906,14 +1906,14 @@ def cmd_ports(cfg, args, board) -> dict:
     ports = list_ports()
     if not args.json:
         if not ports:
-            print("Hiç seri port bulunamadı. USB-TTL takılı mı?")
+            print("No serial ports found. Is the USB-TTL adapter plugged in?")
         for p in ports:
             print(f"  {p['device']:<16} {p['description']}  [{p['hwid']}]")
         if not IS_WIN and Path("/dev/serial/by-id").exists():
-            print("\nKalıcı isimler (bench.toml için önerilir):")
+            print("\nPersistent names (recommended for bench.toml):")
             for p in sorted(Path("/dev/serial/by-id").iterdir()):
                 print(f"  {p}  ->  {os.path.realpath(p)}")
-    return ok_result("ports", f"{len(ports)} seri port bulundu.", ports=ports)
+    return ok_result("ports", f"Found {len(ports)} serial ports.", ports=ports)
 
 
 def cmd_doctor(cfg, args, board) -> dict:
@@ -1927,8 +1927,8 @@ def cmd_doctor(cfg, args, board) -> dict:
         import serial
         add("pyserial", True, serial.__version__)
     except ImportError:
-        add("pyserial", False, "kurulu değil: py -m pip install pyserial")
-    add("config", True, str(cfg.path) if cfg.path else "(varsayılanlar, --sim)")
+        add("pyserial", False, "not installed: py -m pip install pyserial")
+    add("config", True, str(cfg.path) if cfg.path else "(defaults, --sim)")
 
     backend = cfg.get("probe", "backend")
     try:
@@ -1945,41 +1945,41 @@ def cmd_doctor(cfg, args, board) -> dict:
     if backend == "sim":
         add("serial", True, "sim")
     elif not port:
-        add("serial", False, "bench.toml [serial] port boş")
+        add("serial", False, "[serial] port is empty in bench.toml")
     else:
         try:
             devs = {p["device"] for p in list_ports()}
             real = os.path.realpath(port) if not IS_WIN else port
             found = port in devs or real in devs or (not IS_WIN and Path(port).exists())
-            add("serial", found, f"{port} {'bulundu' if found else 'listede yok (bench.py ports)'}")
+            add("serial", found, f"{port} {'found' if found else 'not in the list (bench.py ports)'}")
         except BenchError as e:
             add("serial", False, e.summary)
 
     golden = cfg.resolve(cfg.get("recovery", "golden_image"))
     add("golden_image", golden.is_file(), str(golden) if golden.is_file() else
-        f"{golden} yok: python firmware/build.py", required=False)
+        f"{golden} missing: python firmware/build.py", required=False)
 
     gcc = shutil.which("arm-none-eabi-gcc") or find_tool(None, [], [
         r"C:\ST\STM32CubeCLT*\GNU-tools-for-STM32\bin\arm-none-eabi-gcc.exe",
         r"C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\*\bin\arm-none-eabi-gcc.exe",
         r"C:\Program Files\Arm GNU Toolchain arm-none-eabi\*\bin\arm-none-eabi-gcc.exe",
         "/opt/st/stm32cubeclt*/GNU-tools-for-STM32/bin/arm-none-eabi-gcc"])
-    add("arm-none-eabi-gcc", bool(gcc), gcc or "bulunamadı (firmware derlemek için gerekli)", required=False)
+    add("arm-none-eabi-gcc", bool(gcc), gcc or "not found (needed to build the firmware)", required=False)
 
     ok = all(c["ok"] for c in checks if c["required"])
     if not args.json:
         for c in checks:
-            mark = "OK  " if c["ok"] else ("HATA" if c["required"] else "UYARI")
+            mark = "OK  " if c["ok"] else ("FAIL" if c["required"] else "WARN")
             print(f"  [{mark}] {c['check']:<18} {c['detail']}")
         print()
     return {"ok": ok, "command": "doctor", "checks": checks,
-            "summary": "Tezgah hazır." if ok else "Eksikler var, yukarıdaki HATA satırlarına bak.",
+            "summary": "Bench ready." if ok else "Something is missing; see the FAIL lines above.",
             **({} if ok else {"error_type": "not_ready"})}
 
 
 def cmd_monitor(cfg, args, board) -> dict:
     sess = open_session(cfg, board)
-    print(f"Seri monitör ({cfg.get('serial', 'port')}). Çıkmak için Ctrl+C.")
+    print(f"Serial monitor ({cfg.get('serial', 'port')}). Press Ctrl+C to exit.")
     t_end = time.monotonic() + args.seconds if args.seconds else None
     try:
         while t_end is None or time.monotonic() < t_end:
@@ -1990,7 +1990,7 @@ def cmd_monitor(cfg, args, board) -> dict:
         pass
     finally:
         sess.close()
-    return ok_result("monitor", "Monitör kapandı.")
+    return ok_result("monitor", "Monitor closed.")
 
 
 def cmd_audit(cfg, args, board) -> dict:
@@ -1998,11 +1998,11 @@ def cmd_audit(cfg, args, board) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Üretim istasyonu: kart kart programla ve son test
+# Production station: program and final-test board by board
 # ---------------------------------------------------------------------------
 
-STATION_CSV_FIELDS = ["zaman", "kart_no", "operator", "uid", "firmware_sha256", "sonuc", "basarisiz_adim",
-                      "rapor_klasoru", "tekrar", "denetim_hash"]
+STATION_CSV_FIELDS = ["time", "board_no", "operator", "uid", "firmware_sha256", "result", "failed_step",
+                      "report_dirs", "repeat", "audit_hash"]
 
 BIG = {
     "P": ["█████ ", "█   █ ", "█████ ", "█     ", "█     "],
@@ -2021,12 +2021,13 @@ def big_text(word: str, color: bool) -> str:
 
 
 def station_csv_kind(cfg: Config) -> str:
-    """Sahte kartla yapılan denemeler gerçek üretim kaydına karışmasın."""
+    """Keeps simulated-board trials out of the real production log."""
     return "_sim" if cfg.get("probe", "backend") == "sim" else ""
 
 
 def station_previous(cfg: Config, uid: str) -> list[str]:
-    """Bu UID'nin daha önceki istasyon kayıtlarının zamanları (aynı türdeki tüm station_*.csv dosyalarından)."""
+    """Times of earlier station records for this UID (from all station_*.csv files of the same kind).
+    Files written before the columns were renamed use "zaman" instead of "time"."""
     found = []
     sim = station_csv_kind(cfg) == "_sim"
     for f in sorted(cfg.runs_dir.glob("station_*.csv")):
@@ -2034,14 +2035,24 @@ def station_previous(cfg: Config, uid: str) -> list[str]:
             continue
         try:
             with f.open(encoding="utf-8", newline="") as fh:
-                found += [row["zaman"] for row in csv.DictReader(fh) if row.get("uid") == uid]
+                found += [t for row in csv.DictReader(fh)
+                          if row.get("uid") == uid and (t := row.get("time") or row.get("zaman"))]
         except (OSError, KeyError, csv.Error):
             continue
     return found
 
 
+def station_csv_header(path: Path) -> list[str]:
+    with path.open(encoding="utf-8", newline="") as fh:
+        return next(csv.reader(fh), [])
+
+
 def station_csv_append(cfg: Config, row: dict) -> Path:
-    path = cfg.runs_dir / f"station_{dt.date.today():%Y%m%d}{station_csv_kind(cfg)}.csv"
+    base, kind = f"station_{dt.date.today():%Y%m%d}", station_csv_kind(cfg)
+    path = cfg.runs_dir / f"{base}{kind}.csv"
+    if path.exists() and station_csv_header(path) != STATION_CSV_FIELDS:
+        # today's file has an older header (e.g. the Turkish column names): do not mix columns
+        path = cfg.runs_dir / f"{base}_v2{kind}.csv"
     new = not path.exists()
     with path.open("a", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=STATION_CSV_FIELDS)
@@ -2052,7 +2063,7 @@ def station_csv_append(cfg: Config, row: dict) -> Path:
 
 
 def station_card(cfg: Config, plans: list, board, operator: str, card_no: int) -> dict:
-    """Bir kart: planları sırayla çalıştırır, ilk başarısız planda durur. Denetim satırını yazar."""
+    """One board: runs the plans in order and stops at the first failed plan. Writes the audit entry."""
     results = []
     for plan_path, plan in plans:
         if board is not None:
@@ -2068,7 +2079,7 @@ def station_card(cfg: Config, plans: list, board, operator: str, card_no: int) -
     if not ok:
         bad = results[-1]
         st = next((x for x in bad["steps"] if not x["ok"]), None)
-        failed = (f"{bad['plan']}: {st['step']}. adım {st['name']} ({st['error_type']})" if st
+        failed = (f"{bad['plan']}: step {st['step']} {st['name']} ({st['error_type']})" if st
                   else f"{bad['plan']}: {bad.get('error_type')}")
     prev = station_previous(cfg, uid) if uid else []
     dirs = [r["report_dir"] for r in results]
@@ -2077,10 +2088,10 @@ def station_card(cfg: Config, plans: list, board, operator: str, card_no: int) -
                            "report_dirs": dirs, "repeat_of": prev or None})
     for r in results:
         stamp_audit_hash(r, h)
-    row = {"zaman": dt.datetime.now().isoformat(timespec="seconds"), "kart_no": card_no, "operator": operator,
-           "uid": uid or "okunamadı", "firmware_sha256": fw, "sonuc": "PASS" if ok else "FAIL",
-           "basarisiz_adim": failed, "rapor_klasoru": ";".join(dirs),
-           "tekrar": f"TEKRAR: {len(prev)} önceki test, ilki {prev[0]}" if prev else "", "denetim_hash": h}
+    row = {"time": dt.datetime.now().isoformat(timespec="seconds"), "board_no": card_no, "operator": operator,
+           "uid": uid or "unreadable", "firmware_sha256": fw, "result": "PASS" if ok else "FAIL",
+           "failed_step": failed, "report_dirs": ";".join(dirs),
+           "repeat": f"REPEAT: {len(prev)} previous tests, first {prev[0]}" if prev else "", "audit_hash": h}
     csv_path = station_csv_append(cfg, row)
     return {**row, "ok": ok, "csv": str(csv_path), "repeat_count": len(prev),
             "plans": [{"plan": r["plan"], "ok": r["ok"], "summary": r["summary"], "report_dir": r["report_dir"]}
@@ -2095,17 +2106,17 @@ def cmd_station(cfg, args, board) -> dict:
         print(text, file=out, flush=True)
 
     if args.no_prompt and not args.rounds:
-        raise BenchError("invalid_args", "--no-prompt ile --rounds N de verilmeli (yoksa döngü bitmez).")
+        raise BenchError("invalid_args", "--no-prompt also needs --rounds N (otherwise the loop never ends).")
     names = [n.strip() for n in args.plans.split(",") if n.strip()]
-    plans = [load_plan(cfg, n) for n in names]  # hepsi başta doğrulanır
+    plans = [load_plan(cfg, n) for n in names]  # all are validated up front
 
     operator = (args.operator or "").strip()
     if not operator:
         if args.no_prompt:
-            raise BenchError("invalid_args", "--no-prompt ile --operator ADI verilmeli (izlenebilirlik için).")
+            raise BenchError("invalid_args", "--no-prompt needs --operator NAME (for traceability).")
         while not operator:
-            operator = input("Operatör adı: ").strip()
-    say(f"İstasyon: {cfg.get('bench', 'name')} | operatör: {operator} | planlar: {', '.join(names)}")
+            operator = input("Operator name: ").strip()
+    say(f"Station: {cfg.get('bench', 'name')} | operator: {operator} | plans: {', '.join(names)}")
 
     cards = []
     interrupted = False
@@ -2114,36 +2125,36 @@ def cmd_station(cfg, args, board) -> dict:
             n = len(cards) + 1
             if not args.no_prompt:
                 try:
-                    ans = input(f"\n[{n}] Kartı tak, Enter'a bas (çıkmak için q): ").strip().lower()
+                    ans = input(f"\n[{n}] Connect the board, press Enter (q to quit): ").strip().lower()
                 except EOFError:
                     break
                 if ans == "q":
                     break
             else:
-                say(f"\n[{n}] kart test ediliyor...")
+                say(f"\n[{n}] testing board...")
             c = station_card(cfg, plans, board, operator, n)
             cards.append(c)
             say(big_text("PASS" if c["ok"] else "FAIL", color))
             say(f"  UID {c['uid']}  firmware {c['firmware_sha256'][:16]}…")
             for pr in c["plans"]:
                 say(f"  [{'PASS' if pr['ok'] else 'FAIL'}] {pr['summary']}")
-            if c["basarisiz_adim"]:
-                say(f"  Başarısız adım: {c['basarisiz_adim']}")
+            if c["failed_step"]:
+                say(f"  Failed step: {c['failed_step']}")
             if c["repeat_count"]:
-                say(f"  !!! BU KART DAHA ÖNCE TEST EDİLDİ: {c['tekrar']}")
+                say(f"  !!! THIS BOARD WAS TESTED BEFORE: {c['repeat']}")
     except KeyboardInterrupt:
         interrupted = True
-        say("\nDurduruldu.")
+        say("\nStopped.")
 
     n_pass = sum(c["ok"] for c in cards)
     n_rep = sum(1 for c in cards if c["repeat_count"])
-    summary = (f"İstasyon: {len(cards)} kart, {n_pass} PASS, {len(cards) - n_pass} FAIL"
-               + (f", {n_rep} tekrar test" if n_rep else "") + (" (durduruldu)" if interrupted else "") + ".")
+    summary = (f"Station: {len(cards)} boards, {n_pass} PASS, {len(cards) - n_pass} FAIL"
+               + (f", {n_rep} retested" if n_rep else "") + (" (stopped)" if interrupted else "") + ".")
     res = ok_result("station", summary, operator=operator, plans=names, cards=cards,
                     csv=cards[-1]["csv"] if cards else None)
     if len(cards) != n_pass:
         res.update(ok=False, error_type="cards_failed",
-                   likely_causes=["Başarısız kartların rapor klasörlerine ve serial.log'larına bak"])
+                   likely_causes=["See the report folders and serial.log files of the failed boards"])
     return res
 
 
@@ -2157,75 +2168,75 @@ COMMANDS = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="bench.py", description="STM32 test tezgahı aracı (Windows + Linux)")
-    p.add_argument("--config", help="bench.toml yolu (varsayılan: bench.py'nin yanındaki)")
-    p.add_argument("--json", action="store_true", help="Sonucu JSON olarak yaz (ajanlar için)")
-    p.add_argument("--sim", action="store_true", help="Donanım olmadan sahte kartla çalış")
+    p = argparse.ArgumentParser(prog="bench.py", description="STM32 test bench tool (Windows + Linux)")
+    p.add_argument("--config", help="Path to bench.toml (default: the one next to bench.py)")
+    p.add_argument("--json", action="store_true", help="Print the result as JSON (for agents)")
+    p.add_argument("--sim", action="store_true", help="Run with a simulated board, no hardware")
     p.add_argument("--version", action="version", version=f"tezgah {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("doctor", help="Kurulumu ve bağlantıları kontrol et")
-    sub.add_parser("ports", help="Seri portları listele")
+    sub.add_parser("doctor", help="Check the setup and connections")
+    sub.add_parser("ports", help="List serial ports")
 
-    s = sub.add_parser("flash", help="Firmware yükle (.elf/.hex/.bin)")
+    s = sub.add_parser("flash", help="Flash firmware (.elf/.hex/.bin)")
     s.add_argument("image")
-    s.add_argument("--under-reset", action="store_true", help="Reset altında bağlan (kilitlenmiş kart için)")
+    s.add_argument("--under-reset", action="store_true", help="Connect under reset (for a locked-up board)")
 
-    s = sub.add_parser("reset", help="Kartı resetle")
-    s.add_argument("--expect", help="Reset sonrası beklenen satır (regex), ör. '^BOOT'")
+    s = sub.add_parser("reset", help="Reset the board")
+    s.add_argument("--expect", help="Line expected after reset (regex), e.g. '^BOOT'")
     s.add_argument("--timeout", type=float, default=3)
 
-    s = sub.add_parser("send", help="Seri porttan komut gönder")
+    s = sub.add_parser("send", help="Send a command over the serial port")
     s.add_argument("text")
-    s.add_argument("--expect", help="Beklenen cevap (regex)")
+    s.add_argument("--expect", help="Expected reply (regex)")
     s.add_argument("--timeout", type=float, default=2)
-    s.add_argument("--min", type=float, help="Yakalanan sayının alt sınırı")
-    s.add_argument("--max", type=float, help="Yakalanan sayının üst sınırı")
+    s.add_argument("--min", type=float, help="Lower bound for the captured number")
+    s.add_argument("--max", type=float, help="Upper bound for the captured number")
 
-    s = sub.add_parser("read", help="Seri porttan oku")
+    s = sub.add_parser("read", help="Read from the serial port")
     s.add_argument("--seconds", type=float, default=2)
-    s.add_argument("--until", help="Bu desene uyan satır gelince dur (regex)")
+    s.add_argument("--until", help="Stop when a line matches this pattern (regex)")
 
-    s = sub.add_parser("run", help="Test planı çalıştır (plans/<isim>.toml)")
+    s = sub.add_parser("run", help="Run a test plan (plans/<name>.toml)")
     s.add_argument("plan")
     s.add_argument("--verify-can-fail", action="store_true",
-                   help="Geçerse bir de bilerek bozulmuş beklentiyle çalıştır; FAIL vermeli")
+                   help="If it passes, run again with a deliberately broken expectation; that run must FAIL")
 
-    sub.add_parser("recover", help="Sağlam firmware'i reset altında yükleyip kartı kurtar")
+    sub.add_parser("recover", help="Recover the board by flashing the golden firmware under reset")
 
-    s = sub.add_parser("station", help="Üretim istasyonu: kart kart programla ve son test (q ile çık)")
-    s.add_argument("--plans", default="smoke,measure", help="Virgülle ayrılmış planlar (varsayılan: smoke,measure)")
-    s.add_argument("--operator", help="Operatör adı (verilmezse başta sorulur)")
-    s.add_argument("--rounds", type=int, default=0, help="Bu kadar karttan sonra dur (0: q'ya kadar)")
-    s.add_argument("--no-prompt", action="store_true", help="Enter bekleme (test için; --rounds ve --operator gerekir)")
+    s = sub.add_parser("station", help="Production station: program and final-test board by board (q to quit)")
+    s.add_argument("--plans", default="smoke,measure", help="Comma-separated plans (default: smoke,measure)")
+    s.add_argument("--operator", help="Operator name (asked at start if not given)")
+    s.add_argument("--rounds", type=int, default=0, help="Stop after this many boards (0: until q)")
+    s.add_argument("--no-prompt", action="store_true", help="Do not wait for Enter (for testing; needs --rounds and --operator)")
 
-    s = sub.add_parser("monitor", help="Canlı seri monitör (insan için)")
+    s = sub.add_parser("monitor", help="Live serial monitor (for humans)")
     s.add_argument("--seconds", type=float, default=0)
 
-    sub.add_parser("audit", help="Denetim kaydının bütünlüğünü kontrol et")
+    sub.add_parser("audit", help="Check the integrity of the audit log")
 
-    s = sub.add_parser("halt-dump", help="Çekirdeği durdur; register, hata register'ları ve yığını oku, devam ettir")
-    s.add_argument("--keep-halted", action="store_true", help="Okuduktan sonra çekirdeği durdurulmuş bırak")
-    s.add_argument("--elf", help="Semboller için ELF (varsayılan: [recovery] golden_image)")
+    s = sub.add_parser("halt-dump", help="Halt the core; read registers, fault registers and the stack, then resume")
+    s.add_argument("--keep-halted", action="store_true", help="Leave the core halted after reading")
+    s.add_argument("--elf", help="ELF for symbols (default: [recovery] golden_image)")
 
-    s = sub.add_parser("mem", help="Bellek/register oku (sadece okuma, izinli bölgeler)")
-    s.add_argument("addr", help="Başlangıç adresi, ör. 0x40020C14")
-    s.add_argument("--count", type=int, default=1, help=f"Kaç 32-bit kelime (en fazla {MEM_MAX_WORDS})")
+    s = sub.add_parser("mem", help="Read memory/registers (read-only, allowed regions)")
+    s.add_argument("addr", help="Start address, e.g. 0x40020C14")
+    s.add_argument("--count", type=int, default=1, help=f"Number of 32-bit words (at most {MEM_MAX_WORDS})")
 
-    s = sub.add_parser("gdbserver", help="GDB sunucusu aç (sadece insan için, Ctrl+C ile kapanır)")
+    s = sub.add_parser("gdbserver", help="Start a GDB server (for humans only, stop with Ctrl+C)")
     s.add_argument("--port", type=int, default=3333)
-    s.add_argument("--elf", help="gdb'ye önerilecek ELF (varsayılan: [recovery] golden_image)")
+    s.add_argument("--elf", help="ELF to suggest to gdb (default: [recovery] golden_image)")
     return p
 
 
 def stamp_audit_hash(result: dict, h: str) -> None:
-    """Denetim satırı rapordan sonra yazılır; hash'ini rapora ve result.json'a sonradan işle."""
+    """The audit entry is written after the report; add its hash to the report and result.json afterwards."""
     dirs = [result.get("report_dir"), (result.get("negative_check") or {}).get("report_dir")]
     for d in filter(None, dirs):
         rep = Path(d) / "report.md"
         if rep.exists():
             rep.write_text(rep.read_text(encoding="utf-8").replace(
-                AUDIT_PENDING, f"- Denetim kaydı hash: `{h}` (runs/audit.jsonl)"), encoding="utf-8")
+                AUDIT_PENDING, f"- Audit log hash: `{h}` (runs/audit.jsonl)"), encoding="utf-8")
         rj = Path(d) / "result.json"
         if rj.exists():
             data = json.loads(rj.read_text(encoding="utf-8"))
@@ -2248,7 +2259,7 @@ def main(argv=None) -> int:
     except BenchError as e:
         result = err_result(args.cmd, e)
     except KeyboardInterrupt:
-        result = {"ok": False, "command": args.cmd, "error_type": "interrupted", "summary": "Kullanıcı durdurdu."}
+        result = {"ok": False, "command": args.cmd, "error_type": "interrupted", "summary": "Stopped by the user."}
 
     if cfg is not None and args.cmd not in ("ports", "doctor", "audit", "monitor"):
         try:
@@ -2265,10 +2276,10 @@ def main(argv=None) -> int:
             print(f"  [{'PASS' if s['ok'] else 'FAIL'}] {s['step']:>2}. {s['name']:<22} {s['summary']}")
         rec = result.get("recovery", {})
         if rec.get("attempted"):
-            print(f"  Kurtarma: {'başarılı' if rec.get('ok') else 'BAŞARISIZ, insan müdahalesi gerekli'}")
+            print(f"  Recovery: {'succeeded' if rec.get('ok') else 'FAILED, a human must step in'}")
         neg = result.get("negative_check")
         if neg:
-            print(f"  Negatif kontrol: {'FAIL verdi (iyi)' if neg.get('failed_as_expected') else 'GEÇTİ (kötü)'}")
+            print(f"  Negative check: {'FAILED (good)' if neg.get('failed_as_expected') else 'PASSED (bad)'}")
     emit(result, args.json)
     return 0 if result.get("ok") else 1
 

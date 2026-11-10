@@ -1,18 +1,21 @@
 """Outcome classification (SPEC 7). Pure functions, no I/O. The first matching rule wins:
 
-1. YANLIŞ   a BL jump to slot X whose expected-length hash matches neither old nor new image,
+1. WRONG    a BL jump to slot X whose expected-length hash matches neither old nor new image,
             or an app banner whose version disagrees with the hash of the slot it reports
-2. ÖLÜ      no `BOOT app` line and no `BL update|resume|nofw` in the window
-3. BEKLİYOR the window ends with the BL in update/resume/nofw; accepted only if the host's resume
-            reaches YENİ within resume_limit_s (resume_ok)
-4. ESKİ     the running app is the old version and its slot holds the old image
-5. YENİ     the running app is the new version and its slot holds the new image
-6. BELİRSİZ nothing above matched (e.g. the last app banner was followed by a reset and nothing
+2. DEAD     no `BOOT app` line and no `BL update|resume|nofw` in the window
+3. PENDING  the window ends with the BL in update/resume/nofw; accepted only if the host's resume
+            reaches NEW within resume_limit_s (resume_ok)
+4. OLD      the running app is the old version and its slot holds the old image
+5. NEW      the running app is the new version and its slot holds the new image
+6. UNCLEAR  nothing above matched (e.g. the last app banner was followed by a reset and nothing
             booted again). Not accepted. (Added to SPEC 7 as the explicit fall-through.)
 
 Over the whole trial (update, observe and resume windows) the boots are counted as well
 (count_boots / check_boots, SPEC 7 "unexpected reset"): a BL status line that no known cause
-explains turns an otherwise safe outcome into BELİRSİZ (not accepted). YANLIŞ/ÖLÜ stay.
+explains turns an otherwise safe outcome into UNCLEAR (not accepted). WRONG/DEAD stay.
+
+The outcome names were Turkish until 2026-11-10 (YANLIŞ, ÖLÜ, BEKLİYOR, ESKİ, YENİ, BELİRSİZ).
+Older trials.csv files still carry them; normalize_outcome() maps them to the English names.
 """
 from __future__ import annotations
 
@@ -20,9 +23,16 @@ from dataclasses import dataclass, field
 
 from .proto import Banner, Event
 
-YANLIS, OLU, BEKLIYOR, ESKI, YENI, BELIRSIZ = "YANLIŞ", "ÖLÜ", "BEKLİYOR", "ESKİ", "YENİ", "BELİRSİZ"
-OUTCOMES = (YANLIS, OLU, BEKLIYOR, ESKI, YENI, BELIRSIZ)
-UNSAFE = (YANLIS, OLU)
+WRONG, DEAD, PENDING, OLD, NEW, UNCLEAR = "WRONG", "DEAD", "PENDING", "OLD", "NEW", "UNCLEAR"
+OUTCOMES = (WRONG, DEAD, PENDING, OLD, NEW, UNCLEAR)
+UNSAFE = (WRONG, DEAD)
+# Pre-2026-11-10 outcome names in trials.csv -> current names
+LEGACY_OUTCOMES = {"YANLIŞ": WRONG, "ÖLÜ": DEAD, "BEKLİYOR": PENDING, "ESKİ": OLD, "YENİ": NEW, "BELİRSİZ": UNCLEAR}
+
+
+def normalize_outcome(o: str) -> str:
+    """Map a legacy (Turkish) outcome name to the current one; anything else passes through."""
+    return LEGACY_OUTCOMES.get(o, o)
 
 BOOT_FLOW = {"status", "jump", "rollback", "repair", "wait", "timeout", "banner", "hardfault"}
 
@@ -35,12 +45,12 @@ class Expect:
     old_version: str          # "1.0.0"
     new_version: str          # "2.0.0-crash"
     versions: dict[str, str] = field(default_factory=dict)   # image base -> banner version
-    new_runs: bool = True     # False for v2crash/v2hang/v2noconfirm: the update ends rolled back (ESKİ)
+    new_runs: bool = True     # False for v2crash/v2hang/v2noconfirm: the update ends rolled back (OLD)
 
     @property
     def resume_goal(self) -> str:
-        """What a finished resume must reach: YENİ, or ESKİ (rolled back) for a failing new image."""
-        return YENI if self.new_runs else ESKI
+        """What a finished resume must reach: NEW, or OLD (rolled back) for a failing new image."""
+        return NEW if self.new_runs else OLD
 
 
 @dataclass
@@ -103,7 +113,7 @@ def classify(events: list[Event], labels: dict[str, str], ex: Expect,
     w = summarize(events)
     known = {ex.old_base, ex.new_base}
 
-    # 1. YANLIŞ
+    # 1. WRONG
     bad = []
     for slot, _trial in w.jumps:
         if labels.get(slot) not in known:
@@ -116,38 +126,38 @@ def classify(events: list[Event], labels: dict[str, str], ex: Expect,
             bad.append(f"app banner says {b.full_version} slot={b.slot}, but slot {b.slot} holds '{lab}'"
                        + (f" ({want})" if want else ""))
     if bad:
-        return Verdict(YANLIS, False, bad, w.running)
+        return Verdict(WRONG, False, bad, w.running)
 
-    # 2. ÖLÜ
+    # 2. DEAD
     if not w.banners and not w.saw_wait:
-        return Verdict(OLU, False, ["no 'BOOT app' and no 'BL update|resume|nofw' in the observe window"])
+        return Verdict(DEAD, False, ["no 'BOOT app' and no 'BL update|resume|nofw' in the observe window"])
 
-    # 3. BEKLİYOR
+    # 3. PENDING
     if w.wait is not None:
         ok = bool(resume_ok)
-        why = {None: "not resumed", True: "resume reached YENİ in time",
-               False: "resume did not reach YENİ in time"}[resume_ok]
-        return Verdict(BEKLIYOR, ok, [f"BL is in '{w.wait}'; {why}"], None, resume_ok)
+        why = {None: "not resumed", True: "resume reached NEW in time",
+               False: "resume did not reach NEW in time"}[resume_ok]
+        return Verdict(PENDING, ok, [f"BL is in '{w.wait}'; {why}"], None, resume_ok)
 
     r = w.running
     if r is not None:
         lab = labels.get(r.slot)
-        # 4. ESKİ
+        # 4. OLD
         if r.full_version == ex.old_version and lab == ex.old_base:
-            return Verdict(ESKI, True, [f"old {r.full_version} runs from {r.slot}, slot holds {lab}"], r)
-        # 5. YENİ
+            return Verdict(OLD, True, [f"old {r.full_version} runs from {r.slot}, slot holds {lab}"], r)
+        # 5. NEW
         if r.full_version == ex.new_version and lab == ex.new_base:
-            return Verdict(YENI, True, [f"new {r.full_version} runs from {r.slot}, slot holds {lab}"], r)
-        return Verdict(BELIRSIZ, False, [f"running {r.full_version} slot={r.slot} ('{lab}') is neither "
+            return Verdict(NEW, True, [f"new {r.full_version} runs from {r.slot}, slot holds {lab}"], r)
+        return Verdict(UNCLEAR, False, [f"running {r.full_version} slot={r.slot} ('{lab}') is neither "
                                          f"old {ex.old_version} nor new {ex.new_version}"], r)
-    return Verdict(BELIRSIZ, False, ["the last app banner was followed by a reset and nothing booted again"])
+    return Verdict(UNCLEAR, False, ["the last app banner was followed by a reset and nothing booted again"])
 
 
-def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool, goal: str = YENI) -> Verdict:
-    """The trial ended BEKLİYOR and the host resumed. A YANLIŞ/ÖLÜ during the resume wins
-    (rule 1/2 precede rule 3 over the whole window); otherwise BEKLİYOR, accepted iff the goal
-    (YENİ; ESKİ after the rollback of a failing new image) was reached in time."""
-    assert first.outcome == BEKLIYOR
+def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool, goal: str = NEW) -> Verdict:
+    """The trial ended PENDING and the host resumed. A WRONG/DEAD during the resume wins
+    (rule 1/2 precede rule 3 over the whole window); otherwise PENDING, accepted iff the goal
+    (NEW; OLD after the rollback of a failing new image) was reached in time."""
+    assert first.outcome == PENDING
     if resumed is not None and resumed.outcome in UNSAFE:
         return Verdict(resumed.outcome, False, first.reasons + ["during resume: " + "; ".join(resumed.reasons)],
                        resumed.running, False)
@@ -156,7 +166,7 @@ def combine_resume(first: Verdict, resumed: Verdict | None, within_limit: bool, 
         "resume timed out" if resumed is None else
         f"resume ended {resumed.outcome}" + ("" if within_limit else " (after resume_limit_s)"))
     reasons = [first.reasons[0].split(";")[0] + "; " + why]
-    return Verdict(BEKLIYOR, ok, reasons, resumed.running if resumed else None, ok)
+    return Verdict(PENDING, ok, reasons, resumed.running if resumed else None, ok)
 
 
 # --- boot accounting (SPEC 7, unexpected reset) ---------------------------------------------
@@ -199,11 +209,11 @@ def count_boots(events: list[Event], external_resets: int = 0) -> BootCount:
 
 
 def check_boots(v: Verdict, bc: BootCount) -> Verdict:
-    """A trial with more boots than explained resets is not accepted: BELİRSİZ, unless the outcome
-    is already unsafe (YANLIŞ/ÖLÜ)."""
+    """A trial with more boots than explained resets is not accepted: UNCLEAR, unless the outcome
+    is already unsafe (WRONG/DEAD)."""
     n = bc.unexpected
     if not n or v.outcome in UNSAFE:
         return v
     why = (f"{n} unexpected reset(s): {bc.boots} BL boots, {bc.explained} explained "
            f"({', '.join(f'{k}={c}' for k, c in bc.causes.items() if c) or 'none'})")
-    return Verdict(BELIRSIZ, False, v.reasons + [why], v.running, v.resume_ok)
+    return Verdict(UNCLEAR, False, v.reasons + [why], v.running, v.resume_ok)

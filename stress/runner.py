@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 
 from ._bench import BenchError
-from .classify import (BEKLIYOR, BELIRSIZ, ESKI, OLU, YANLIS, YENI, Expect, Verdict, check_boots, classify,
+from .classify import (PENDING, UNCLEAR, OLD, DEAD, WRONG, NEW, Expect, Verdict, check_boots, classify,
                        combine_resume, count_boots, summarize)
 from .config import StressConfig
 from .csvlog import Wear
@@ -278,9 +278,9 @@ class ResumeResult:
 
 
 def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
-    """The BL waits in update/resume/nofw: finish the update and see whether YENİ follows.
+    """The BL waits in update/resume/nofw: finish the update and see whether NEW follows.
     If the BL has already left update mode (its 3 s wait ran out: 'BL timeout', then it booted the
-    old app), the transfer does not start blindly: the window is classified, and an ESKİ app is
+    old app), the transfer does not start blindly: the window is classified, and an OLD app is
     sent 'UPD' to enter update mode again (recorded as resume_reentered)."""
     link, t0 = ctx.link, ctx.clock.now()
     deadline = t0 + ctx.resume_limit_s
@@ -315,7 +315,7 @@ def do_resume(ctx: Ctx, old: Image, new: Image, ex: Expect) -> ResumeResult:
         st = ctx.probe.read_state()
         v = classify(ev, st.labels(ctx.images, [old, new]), ex)
         rolled_back = not ex.new_runs and up.status == "commit"
-        if v.outcome == ESKI and not rolled_back:   # BL gave up waiting and booted the old app: update it again
+        if v.outcome == OLD and not rolled_back:   # BL gave up waiting and booted the old app: update it again
             in_bl = False
             continue
         return ResumeResult(v, ctx.clock.now() - t0, events, st, transfers, notes, reentered)
@@ -418,7 +418,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
                                  [f"Pass --target {er.status.target}", "Check --config (bench-c031.toml for the C031)"])
         if not er.ok:
             # No 'BL update' after ENTER_TRIES attempts: nothing was updated, so there is nothing to
-            # observe (an empty window would read as ÖLÜ). The trial is a setup failure.
+            # observe (an empty window would read as DEAD). The trial is a setup failure.
             setup_failed = f"could not enter update mode after {ENTER_TRIES} tries ({er.why})"
             break
         if any(hook_entries) or plan.trace:
@@ -469,7 +469,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
         events, w = [], summarize([])
         st = ctx.probe.read_state()
         labels = st.labels(ctx.images, cands)
-        v = Verdict(BELIRSIZ, False, [f"setup failed: {setup_failed}; no update was attempted"])
+        v = Verdict(UNCLEAR, False, [f"setup failed: {setup_failed}; no update was attempted"])
     else:
         events = observe(link, start, ctx.observe_s, ctx.settle_s)
         w = summarize(events)
@@ -483,7 +483,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
         v = classify(events, labels, ex)
     all_events = list(events)
 
-    if v.outcome == BEKLIYOR:
+    if v.outcome == PENDING:
         rr = resume_info or do_resume(ctx, old, new, ex)
         all_events += rr.events
         within = rr.seconds <= ctx.resume_limit_s
@@ -529,7 +529,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
     facts = {"outcome": v.outcome, "accepted": v.accepted, "err_code": row.get("err_code"),
              "expect_err": plan.expect_err, "trial_jumps": w.trial_jumps, "rollbacks": w.rollbacks}
     facts["active_unchanged"] = st.slot_sha(old.slot) == base.state.slot_sha(old.slot)
-    if v.outcome == YENI and plan.test == "basic":
+    if v.outcome == NEW and plan.test == "basic":
         ok, why = smoke(ctx, new)
         facts["smoke_ok"] = ok
         if not ok:
@@ -540,11 +540,11 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
 
     # timings
     final = v.running
-    if v.outcome == YENI and final is not None:
+    if v.outcome == NEW and final is not None:
         t_ok = next((e.t for e in reversed(all_events) if e.kind in ("confirmed", "banner")), None)
         if t_ok is not None:
             row["update_s"] = round(t_ok - t_upd, 3)
-    if up is not None and up.t_commit is not None and v.outcome == ESKI and w.rollbacks:
+    if up is not None and up.t_commit is not None and v.outcome == OLD and w.rollbacks:
         t_old = next((e.t for e in reversed(events) if e.kind == "banner"), None)
         if t_old is not None:
             notes.append(f"rollback_s={t_old - up.t_commit:.3f}")
@@ -553,7 +553,7 @@ def run_trial(ctx: Ctx, plan: TrialPlan) -> tuple[dict, dict]:
 
     trial_events = link.events[mark0:]
     # recovery
-    if v.outcome in (OLU, YANLIS, BELIRSIZ) or (v.outcome == BEKLIYOR and not v.accepted):
+    if v.outcome in (DEAD, WRONG, UNCLEAR) or (v.outcome == PENDING and not v.accepted):
         rec = recover(ctx)
         row["stlink_needed"] = True
         row["recovery_s"] = round(rec.seconds, 3)

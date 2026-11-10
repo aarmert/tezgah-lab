@@ -5,6 +5,8 @@ import csv
 import json
 from pathlib import Path
 
+from .classify import normalize_outcome
+
 COLUMNS = (
     "trial,seed,trial_seed,test,design,fault_type,phase,phase_index,delay_us,byte_offset,fault2_phase,"
     "fault2_index,fault2_delay_us,from_version,to_version,image,outcome,accepted,expect_ok,running_version,"
@@ -46,8 +48,13 @@ class CsvLog:
 
 
 def read_rows(path: Path) -> list[dict]:
+    """Rows as dicts. Legacy (Turkish) outcome names are mapped to the current ones."""
     with Path(path).open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    for r in rows:
+        if "outcome" in r:
+            r["outcome"] = normalize_outcome(r["outcome"])
+    return rows
 
 
 def note_kv(note: str) -> dict[str, str]:

@@ -1,15 +1,15 @@
-# Kamera testi: yeşil LED'in yanıp sönme frekansı telefon kamerasıyla sayısal olarak ölçülür.
-# Video ve LED bölgesi işaretli kare her adımda rapor klasörüne kaydedilir (cam_stepNN.mp4, cam_stepNN_roi.jpg).
-# LED bölgesi otomatik bulunur (parlaklığı en çok değişen yer); bench.toml [camera] roi ile sabitlenebilir.
+# Camera test: the phone camera measures the blink frequency of the green LED.
+# Each step saves the video and a frame with the LED region marked to the report folder (cam_stepNN.mp4, cam_stepNN_roi.jpg).
+# The LED region is found automatically (the spot whose brightness changes most); bench.toml [camera] roi can fix it.
 name = "camera_blink"
-description = "BLINK 1/2/4 frekanslarını kamerayla ölç, LED G ON sonrası LED'in sabit yandığını doğrula."
+description = "Measure BLINK 1/2/4 with the camera and check that the LED stays on after LED G ON."
 firmware = "firmware/build/stm32bench-fw.elf"
 
 [[step]]
 action = "flash"
 
 [[step]]
-name = "açılış mesajı"
+name = "boot message"
 action = "expect"
 pattern = '^BOOT stm32bench-fw v\d+\.\d+\.\d+'
 timeout = 3
@@ -20,7 +20,7 @@ text = "BLINK 1"
 expect = '^OK BLINK 1$'
 
 [[step]]
-name = "kamera: 1 Hz"
+name = "camera: 1 Hz"
 action = "cam_blink"
 seconds = 5
 range = [0.9, 1.1]
@@ -31,7 +31,7 @@ text = "BLINK 2"
 expect = '^OK BLINK 2$'
 
 [[step]]
-name = "kamera: 2 Hz"
+name = "camera: 2 Hz"
 action = "cam_blink"
 seconds = 4
 range = [1.8, 2.2]
@@ -42,7 +42,7 @@ text = "BLINK 4"
 expect = '^OK BLINK 4$'
 
 [[step]]
-name = "kamera: 4 Hz"
+name = "camera: 4 Hz"
 action = "cam_blink"
 seconds = 4
 range = [3.6, 4.4]
@@ -53,7 +53,7 @@ text = "LED G ON"
 expect = '^OK LED G ON$'
 
 [[step]]
-name = "kamera: LED sabit yanıyor"
+name = "camera: LED steady on"
 action = "cam_blink"
 seconds = 3
 steady = "on"

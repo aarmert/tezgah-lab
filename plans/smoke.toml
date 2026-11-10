@@ -1,6 +1,6 @@
-# Duman testi: firmware yüklenip açılıyor mu, temel komutlara cevap veriyor mu?
+# Smoke test: does the firmware flash and boot, and does it answer the basic commands?
 name = "smoke"
-description = "Firmware'i yükle, açılış mesajını gör, temel komutlara cevap veriyor mu kontrol et."
+description = "Flash the firmware, see the boot message, check that it answers the basic commands."
 firmware = "firmware/build/stm32bench-fw.elf"
 
 [[step]]
@@ -10,7 +10,7 @@ action = "flash"
 action = "reset"
 
 [[step]]
-name = "açılış mesajı"
+name = "boot message"
 action = "expect"
 pattern = '^BOOT stm32bench-fw v\d+\.\d+\.\d+'
 timeout = 3
@@ -26,7 +26,7 @@ action = "send"
 text = "VER"
 expect = '^VER (\d+\.\d+\.\d+)$'
 
-# Sayısal aralık örneği: açılıştan beri geçen süre makul mü?
+# Numeric range example: is the time since boot reasonable?
 [[step]]
 action = "send"
 text = "TICK"
@@ -48,7 +48,7 @@ action = "send"
 text = "LED O OFF"
 expect = '^OK LED O OFF$'
 
-# Bilinmeyen komuta doğru hata dönüyor mu?
+# Does an unknown command return the right error?
 [[step]]
 action = "send"
 text = "FOO"

@@ -1,4 +1,4 @@
-/* Minimal Cortex-M4 başlangıç kodu: vektör tablosu, .data/.bss hazırlığı */
+/* Minimal Cortex-M4 startup code: vector table, .data/.bss setup */
 #include <stdint.h>
 #include <stddef.h>
 
@@ -44,7 +44,7 @@ const vector_t g_vectors[16] = {
     SysTick_Handler,
 };
 
-/* Derleyici yapı kopyalarında bunları çağırabilir (libc yok) */
+/* The compiler may call these for struct copies (no libc) */
 void *memcpy(void *d, const void *s, size_t n) {
     uint8_t *dp = d; const uint8_t *sp = s;
     while (n--) *dp++ = *sp++;

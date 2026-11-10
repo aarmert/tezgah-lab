@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from stress.classify import BELIRSIZ, YENI, Expect
+from stress.classify import UNCLEAR, NEW, Expect
 from stress.config import load_stress_config
 from stress.csvlog import Wear
 from stress.images import ImageSet
@@ -56,7 +56,7 @@ class ResumeAfterBlTimeout(unittest.TestCase):
         rr = do_resume(ctx, old, new, ex)
         self.assertEqual(rr.reentered, 1)
         self.assertTrue(any("left update mode" in n for n in rr.notes), rr.notes)
-        self.assertEqual(rr.verdict.outcome, YENI)
+        self.assertEqual(rr.verdict.outcome, NEW)
         # the first transfer sent nothing to the app (no 'ERR line too long')
         self.assertFalse(any("line too long" in e.line for e in link.events))
 
@@ -89,7 +89,7 @@ class UnexpectedReset(unittest.TestCase):
         ctx, board = make_ctx("basic", Glitch)
         row, _ = run_trial(ctx, TrialPlan(0, 1, "basic", 1))
         self.assertTrue(board.glitched)
-        self.assertEqual((row["outcome"], row["accepted"], row["expect_ok"]), (BELIRSIZ, False, False))
+        self.assertEqual((row["outcome"], row["accepted"], row["expect_ok"]), (UNCLEAR, False, False))
         self.assertIn("unexpected_reset=1", row["note"])
         self.assertTrue(row["stlink_needed"])
 
@@ -109,9 +109,9 @@ class SetupFailure(unittest.TestCase):
     def test_recorded_not_observed(self):
         ctx, _ = make_ctx("reset_random", NoUpdateMode)
         row, _ = run_trial(ctx, TrialPlan(0, 1, "reset_random", 1, entry0=("ERASE", -1, 100)))
-        self.assertEqual((row["outcome"], row["accepted"]), (BELIRSIZ, False))
+        self.assertEqual((row["outcome"], row["accepted"]), (UNCLEAR, False))
         self.assertIn("setup_failed", row["note"])
-        self.assertNotIn("ÖLÜ", row["note"])
+        self.assertNotIn("DEAD", row["note"])
 
 
 if __name__ == "__main__":

@@ -191,7 +191,7 @@ def render_md(s: dict, run: dict) -> str:
     f, u = s["failure"], s["unsafe"]
     L += ["", "## Failure rate", "",
           "| measure | k / n | rate | 95% upper bound | method |", "|---|---|---|---|---|"]
-    for name, d in (("pass criterion failed", f), ("unsafe (ÖLÜ+YANLIŞ)", u)):
+    for name, d in (("pass criterion failed", f), ("unsafe (DEAD+WRONG)", u)):
         extra = f"; 3/N = {_f(d.get('rule_of_three'), 2, True)}" if d.get("rule_of_three") is not None else ""
         cp = d.get("cp95_two_sided")
         extra += f"; two-sided CP95 [{_f(cp[0], 2, True)}, {_f(cp[1], 2, True)}]" if cp and d["failures"] else ""

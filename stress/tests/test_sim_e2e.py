@@ -51,23 +51,23 @@ class SimRuns(unittest.TestCase):
 
     def test_basic(self):
         _, rows = self.run_ok("basic", "--n", "4")
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
         self.assertEqual([x["to_version"] for x in rows], ["2.0.0", "1.0.0", "2.0.0", "1.0.0"])
         self.assertTrue(all(float(x["throughput_Bps"]) > 0 and x["update_s"] for x in rows))
 
     def test_transfer_cut(self):
         _, rows = self.run_ok("transfer_cut", "--n", "10")
-        self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"OLD"})
         self.assertTrue(all(x["byte_offset"] for x in rows))
 
     def test_line_noise(self):
         _, rows = self.run_ok("line_noise", "--n", "8", "--rate", "0.2")
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
         self.assertGreater(sum(int(x["retries"]) for x in rows), 0)
 
     def test_line_noise_high_rate(self):
         _, rows = self.run_ok("line_noise", "--n", "10", "--rate", "0.3")
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
 
     def test_slow_stlink_resume_race(self):
         """The ST-Link read (3.5 s) outlasts the BL's resume wait (3 s): the host must resume first."""
@@ -75,8 +75,8 @@ class SimRuns(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         rows = rows_of(r)
         self.assertTrue(all(x["accepted"] == "1" for x in rows), [x["note"] for x in rows])
-        self.assertNotIn("ÖLÜ", {x["outcome"] for x in rows})
-        self.assertGreater(sum(x["outcome"] == "BEKLİYOR" for x in rows), 0)
+        self.assertNotIn("DEAD", {x["outcome"] for x in rows})
+        self.assertGreater(sum(x["outcome"] == "PENDING" for x in rows), 0)
 
     def test_reset_tests_ab_all_accepted(self):
         for test, n in (("reset_random", "12"), ("reset_sweep", "30"), ("double_fault", "12")):
@@ -115,11 +115,11 @@ class SimRuns(unittest.TestCase):
         got = {x["image"].rsplit("_", 1)[0]: x["err_code"] for x in rows}
         self.assertEqual(got, {"bad_crc": "IMG_CRC", "wrong_board": "BOARD", "truncated": "SHORT",
                                "oversize": "SIZE", "old": "VERSION"})
-        self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"OLD"})
 
     def test_rollback(self):
         _, rows = self.run_ok("rollback", "--n", "3")
-        self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"OLD"})
         self.assertTrue(all("rollback_s=" in x["note"] for x in rows))
         self.assertEqual({x["attempts"] for x in rows}, {"3"})      # ROLLBACK keeps the attempts
 
@@ -127,7 +127,7 @@ class SimRuns(unittest.TestCase):
         r = cli("run", "naive_control", "--n", "10", "--sim")
         self.assertTrue(r["ok"], r)
         outcomes = [x["outcome"] for x in rows_of(r)]
-        self.assertTrue(any(o in ("ÖLÜ", "YANLIŞ") for o in outcomes), outcomes)
+        self.assertTrue(any(o in ("DEAD", "WRONG") for o in outcomes), outcomes)
         self.assertTrue(any(x["stlink_needed"] == "1" for x in rows_of(r)))
 
     def test_naive_sweep_fails_where_ab_passes(self):

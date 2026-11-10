@@ -1,9 +1,9 @@
-# Dahili ölçüm testi: ek cihaz olmadan kartın kendi ölçümleri.
-# VDD: VREFINT + fabrika kalibrasyonu ile besleme gerilimi (Discovery 3,0 V ile çalışır).
-# TEMP: dahili sıcaklık sensörü (çip sıcaklığı, oda sıcaklığından birkaç derece yüksek olur).
-# clock_check: kartın ms sayacı PC'nin saatiyle karşılaştırılır (SysTick/HSI doğru mu).
+# Internal measurement test: the board's own measurements, no extra instruments.
+# VDD: supply voltage from VREFINT + factory calibration (the Discovery runs at 3.0 V).
+# TEMP: internal temperature sensor (chip temperature, a few degrees above room temperature).
+# clock_check: the board's ms counter is compared with the PC clock (is SysTick/HSI right?).
 name = "measure"
-description = "VDD ve TEMP dahili ölçümleri aralıkta mı, kartın saati PC saatiyle uyuşuyor mu kontrol et."
+description = "Check that the internal VDD and TEMP readings are in range and that the board clock matches the PC clock."
 firmware = "firmware/build/stm32bench-fw.elf"
 
 [[step]]
@@ -13,27 +13,27 @@ action = "flash"
 action = "reset"
 
 [[step]]
-name = "açılış mesajı"
+name = "boot message"
 action = "expect"
 pattern = '^BOOT stm32bench-fw v\d+\.\d+\.\d+'
 timeout = 3
 
 [[step]]
-name = "besleme gerilimi (mV)"
+name = "supply voltage (mV)"
 action = "send"
 text = "VDD"
 expect = '^VDD (\d+)$'
 range = [2850, 3150]
 
 [[step]]
-name = "çip sıcaklığı (°C)"
+name = "chip temperature (°C)"
 action = "send"
 text = "TEMP"
 expect = '^TEMP (-?\d+(?:\.\d+)?)$'
 range = [15, 60]
 
 [[step]]
-name = "kart saati / PC saati"
+name = "board clock / PC clock"
 action = "clock_check"
 seconds = 5
 range = [0.97, 1.03]

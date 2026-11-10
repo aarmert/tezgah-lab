@@ -1,48 +1,48 @@
-# tezgah ayar dosyası
-# Bu dosyayı "bench.toml" adıyla kopyala ve kendi bilgisayarına göre düzenle.
-# Göreli yollar bu dosyanın bulunduğu klasöre göredir.
+# tezgah config file
+# Copy this file to "bench.toml" and edit it for your computer.
+# Relative paths are relative to the folder of this file.
 
 [bench]
 name = "discovery-1"
 
 [probe]
-# "openocd" (Ubuntu'da apt ile kurulur), "cubeprog" (STM32CubeProgrammer CLI) veya "sim" (sahte kart)
+# "openocd" (apt install on Ubuntu), "cubeprog" (STM32CubeProgrammer CLI) or "sim" (simulated board)
 backend = "openocd"
 
-# Bulunamazsa tam yolu ver:
+# If it is not found, give the full path:
 # Windows: cubeprog_path = 'C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe'
 # Linux:   cubeprog_path = "/opt/st/stm32cubeclt_1.22.0/STM32CubeProgrammer/bin/STM32_Programmer_CLI"
 
-# Birden fazla ST-Link takılıysa hangisi (bench.py doctor seri numarasını gösterir):
+# Which ST-Link to use if more than one is plugged in (bench.py doctor shows the serial number):
 # serial_number = "066DFF..."
 
-# NORMAL çoğu durumda yeter. Kurtarma her zaman reset altında (UR) bağlanır.
+# NORMAL is enough in most cases. Recovery always connects under reset (UR).
 connect_mode = "NORMAL"
 timeout_s = 90
 
-# OpenOCD ayarları (STM32F4 Discovery için bunlar doğru)
+# OpenOCD settings (these are right for the STM32F4 Discovery)
 openocd_interface = "interface/stlink.cfg"
 openocd_target = "target/stm32f4x.cfg"
 
 [serial]
-# USB-TTL'in portu. "python bench.py ports" ile bul.
-# Linux: kalıcı isim önerilir, ör. "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0"
-#        (yoksa "/dev/ttyUSB0")
+# The USB-TTL adapter's port. Find it with "python bench.py ports".
+# Linux: a persistent name is recommended, e.g. "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0"
+#        (otherwise "/dev/ttyUSB0")
 # Windows: "COM5"
 port = "/dev/ttyUSB0"
 baud = 115200
 
 [recovery]
-# Kart kilitlenirse reset altında yüklenecek, çalıştığı bilinen firmware
+# Known-good firmware flashed under reset if the board locks up
 golden_image = "firmware/build/stm32bench-fw.elf"
-# Kartın açıldığını gösteren satır (regex)
+# The line that shows the board has booted (regex)
 banner = '^BOOT '
 banner_timeout_s = 3
 
 [permissions]
 allow_flash = true
 allow_reset = true
-# true yapınca sadece plans/ klasöründeki planlar çalıştırılabilir (ajan kendi planını uyduramaz)
+# When true, only plans in the plans/ folder can run (an agent cannot make up its own plan)
 plans_dir_only = false
 
 [paths]
@@ -50,10 +50,10 @@ plans_dir = "plans"
 runs_dir = "runs"
 
 # [camera]
-# cam_blink adımı için telefon kamerası (camera/ klasörü). Hepsi isteğe bağlı, varsayılanlar:
-# tool_dir = "camera"        # göreli yol bu dosyanın klasörüne göre
+# Phone camera for the cam_blink step (camera/ folder). All optional; the defaults:
+# tool_dir = "camera"        # relative to the folder of this file
 # bun = "~/.bun/bin/bun"
-# serial = ""          # boşsa tek bağlı adb cihazı kullanılır
+# serial = ""          # if empty, the only connected adb device is used
 # camera = "back"
 # fps = 30
-# roi = [733, 778, 30, 30]   # LED bölgesi [x, y, genişlik, yükseklik]; verilmezse otomatik bulunur
+# roi = [733, 778, 30, 30]   # LED region [x, y, width, height]; found automatically if not given

@@ -31,22 +31,23 @@ C031 bench (`bench-c031.toml`, used by `python -m stress --target c031`; running
 - `bench.py halt-dump` and `mem` have F407 constants and give wrong results on the C031
 
 ## Commands (always use --json)
-- Build: `python firmware/build.py --json`
-- Run a test plan: `python bench.py --json run smoke`
-- When verifying a new feature: `python bench.py --json run <plan> --verify-can-fail`
-- Try a single command: `python bench.py --json send "PING" --expect "^PONG$"`
-- Reset and check the boot message: `python bench.py --json reset --expect "^BOOT"`
-- If the board does not respond: `python bench.py --json recover`
-- If the board is hung or crashed, see where it stopped: `python bench.py --json halt-dump`
+- Run Python through uv (`uv run ...`) so it uses `.venv` with the packages in `uv.lock`. If `.venv` is missing, run `uv sync`.
+- Build: `uv run firmware/build.py --json`
+- Run a test plan: `uv run bench.py --json run smoke`
+- When verifying a new feature: `uv run bench.py --json run <plan> --verify-can-fail`
+- Try a single command: `uv run bench.py --json send "PING" --expect "^PONG$"`
+- Reset and check the boot message: `uv run bench.py --json reset --expect "^BOOT"`
+- If the board does not respond: `uv run bench.py --json recover`
+- If the board is hung or crashed, see where it stopped: `uv run bench.py --json halt-dump`
   It prints pc, the fault registers with descriptions, the `stacked_frame` from the moment of the crash,
   and the code addresses on the stack, then resumes the core. Run this first and reset afterwards,
   because a reset erases the evidence.
-- Read memory or a register: `python bench.py --json mem 0x40020C14 --count 1` (read only, allowed regions only)
+- Read memory or a register: `uv run bench.py --json mem 0x40020C14 --count 1` (read only, allowed regions only)
 - `bench.py gdbserver` is for humans only. Do not run it.
-- Stress tool (C031 bench): `python -m stress --json doctor --target c031`, then
-  `python -m stress --json run <test> --target c031 [--reset-source esp]`. Commands are in
+- Stress tool (C031 bench): `uv run python -m stress --json doctor --target c031`, then
+  `uv run python -m stress --json run <test> --target c031 [--reset-source esp]`. Commands are in
   `stress/README.md`; `plan` and `report` do not touch the board, `--sim` runs without hardware.
-- ESP32 bridge: build with `python3 esp32/build.py --json`. Uploading it is a human step.
+- ESP32 bridge: build with `uv run esp32/build.py --json`. Uploading it is a human step.
 
 Every result has `ok`, `error_type`, `summary`, and `likely_causes` fields. After a failed
 `run`, read `serial.log` in the `report_dir`.

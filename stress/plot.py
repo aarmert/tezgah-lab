@@ -6,8 +6,8 @@ from pathlib import Path
 from .classify import OUTCOMES
 from .csvlog import read_rows
 
-COLORS = {"YENİ": "#2a9d8f", "ESKİ": "#8ab17d", "BEKLİYOR": "#e9c46a", "BELİRSİZ": "#9e9e9e",
-          "YANLIŞ": "#e76f51", "ÖLÜ": "#6d2e46"}
+COLORS = {"NEW": "#2a9d8f", "OLD": "#8ab17d", "PENDING": "#e9c46a", "UNCLEAR": "#9e9e9e",
+          "WRONG": "#e76f51", "DEAD": "#6d2e46"}
 
 
 def write_plots(run_dir: Path) -> dict:

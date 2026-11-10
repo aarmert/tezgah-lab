@@ -397,7 +397,7 @@ def calibrate(args, scfg: StressConfig, design: str, runs: int, quiet: bool = Fa
         for p in plans:
             tl_mark = len(bridge.timeline) if bridge is not None else 0
             row, ex = run_trial(b.ctx, p)
-            want = "ESKİ" if p.scenario == "rollback" else "YENİ"
+            want = "OLD" if p.scenario == "rollback" else "NEW"
             if row["outcome"] != want:
                 raise BenchError("calibration_failed",
                                  f"Calibration update {p.trial} ({p.scenario}) ended {row['outcome']}, not {want}.",

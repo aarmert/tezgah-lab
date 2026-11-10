@@ -33,15 +33,15 @@ Add `--sim` to any of them to run against the simulator instead of the board (se
 
 | test | # | fault | pass |
 |---|---|---|---|
-| `basic` | 1 | none, alternates v1↔v2 | all YENİ + smoke (PING/VER/TICK/UID) |
-| `transfer_cut` | 2 | host stops at a random byte of the transfer | ESKİ, active slot hash unchanged |
-| `line_noise` | 3 | corrupt/drop/delay(0-900 ms) per line with probability `--rate` | YENİ |
+| `basic` | 1 | none, alternates v1↔v2 | all NEW + smoke (PING/VER/TICK/UID) |
+| `transfer_cut` | 2 | host stops at a random byte of the transfer | OLD, active slot hash unchanged |
+| `line_noise` | 3 | corrupt/drop/delay(0-900 ms) per line with probability `--rate` | NEW |
 | `reset_random` | 4a | `FAULT ARM 0 ERASE -1 <uniform over the update window>` | accepted only |
 | `reset_sweep` | 4b | every phase × index × delay that occurs in the scenario (calibrated) | accepted only |
 | `double_fault` | 5 | entry 0 as 4b, entry 1 at the reachable ones of META ROLLBACK/ATTEMPT/REPAIR, ROTATE, BOOT | accepted only |
-| `bad_image` | 6 | bad_crc, wrong_board, truncated, oversize, old | the right `ERR`, ESKİ, hash unchanged |
-| `rollback` | 7 | v2crash / v2hang / v2noconfirm | ESKİ after ≤ 3 trial attempts |
-| `naive_control` | 8 | 4a + 4b on the naive BL | **must** show ÖLÜ/YANLIŞ |
+| `bad_image` | 6 | bad_crc, wrong_board, truncated, oversize, old | the right `ERR`, OLD, hash unchanged |
+| `rollback` | 7 | v2crash / v2hang / v2noconfirm | OLD after ≤ 3 trial attempts |
+| `naive_control` | 8 | 4a + 4b on the naive BL | **must** show DEAD/WRONG |
 
 `--meta-near-full` (reset_random, reset_sweep, double_fault; design ab) flashes S1..S4 of
 `golden_ab_metafull` before every trial: META0 is one record short of full, so the update's records
@@ -64,19 +64,19 @@ line shows `hooks`). Run `calibrate` once per design, and again whenever the fir
    (naive: always A). With no armed fault and no cut, the host may start the whole update again (at
    most 3 times) when the BL gave up after lost lines (`BL timeout`); an unexpected reset is never
    retried. If `UPD` does not give `BL update` after 3 tries, the trial is a setup failure
-   (BELİRSİZ, note `setup_failed`); nothing is observed.
+   (UNCLEAR, note `setup_failed`); nothing is observed.
 3. **Observe**: read lines until the board settles (confirmed app, no reset for `settle_s`), the BL
    waits in `update|resume|nofw`, or `observe_s` passes.
 4. **Read + classify**: a second ST-Link read, then `classify.py`. When the window ends in
    `BL update|resume` with no jump/banner before it, the resume (step 5) starts first and the read
    comes after it: the BL waits only 3 s, an ST-Link read can take longer.
-5. **BEKLİYOR**: the host finishes the update and must reach YENİ within `resume_limit_s`. The
+5. **PENDING**: the host finishes the update and must reach NEW within `resume_limit_s`. The
    updater never sends UPD commands blindly: if the lines since the last `BL update|resume` show the
    BL left update mode (`BL timeout`, jump, banner), it classifies that and, when the old app runs,
    enters update mode again with `UPD` (note `resume_reentered=<n>`).
    Then the boots are counted (SPEC 7): a BL status line no known reset explains makes the trial
-   BELİRSİZ (note `unexpected_reset=<n>`).
-6. **Recovery** after ÖLÜ, YANLIŞ, BELİRSİZ or a failed resume: reset first; if that does not
+   UNCLEAR (note `unexpected_reset=<n>`).
+6. **Recovery** after DEAD, WRONG, UNCLEAR or a failed resume: reset first; if that does not
    give a usable baseline, flash `golden_<design>.bin` under reset, then verify with an ST-Link read.
    `stlink_needed=1`, `recovery_s` recorded. If recovery fails the run stops.
 
@@ -84,19 +84,23 @@ line shows `hooks`). Run `calibrate` once per design, and again whenever the fir
 
 `classify.py` is a pure function with unit tests for every branch. The first match wins:
 
-1. **YANLIŞ**: the BL jumped to a slot whose expected-length hash is neither the old nor the new
+1. **WRONG**: the BL jumped to a slot whose expected-length hash is neither the old nor the new
    image, or an app banner's version disagrees with the hash of the slot it names.
-2. **ÖLÜ**: no `BOOT app` and no `BL update|resume|nofw` in the window.
-3. **BEKLİYOR**: the window ends with the BL in `update|resume|nofw`. Accepted only if the resume
-   reached YENİ in time (`resume_ok=1`). A YANLIŞ/ÖLÜ during the resume wins over BEKLİYOR.
-4. **ESKİ**: the running app is the old version and its slot holds the old image.
-5. **YENİ**: the running app is the new version and its slot holds the new image.
-6. **BELİRSİZ**: nothing above (for example the last banner was followed by a reset and nothing
+2. **DEAD**: no `BOOT app` and no `BL update|resume|nofw` in the window.
+3. **PENDING**: the window ends with the BL in `update|resume|nofw`. Accepted only if the resume
+   reached NEW in time (`resume_ok=1`). A WRONG/DEAD during the resume wins over PENDING.
+4. **OLD**: the running app is the old version and its slot holds the old image.
+5. **NEW**: the running app is the new version and its slot holds the new image.
+6. **UNCLEAR**: nothing above (for example the last banner was followed by a reset and nothing
    booted again), an unexpected reset, or a setup failure. Not accepted.
 
-Accepted = ESKİ, YENİ, BEKLİYOR with `resume_ok`. The test's own pass criterion (`expect_ok`) can be
-stricter (table above). With the naive BL every jump into a half-written slot is YANLIŞ by rule 1,
-so the naive control shows mostly YANLIŞ and few ÖLÜ.
+Accepted = OLD, NEW, PENDING with `resume_ok`. The test's own pass criterion (`expect_ok`) can be
+stricter (table above). With the naive BL every jump into a half-written slot is WRONG by rule 1,
+so the naive control shows mostly WRONG and few DEAD.
+
+The outcome names were Turkish until 2026-11-10 (YANLIŞ = WRONG, ÖLÜ = DEAD, BEKLİYOR = PENDING,
+ESKİ = OLD, YENİ = NEW, BELİRSİZ = UNCLEAR). Older `trials.csv` files keep them; `report` and the
+`--plot` step map them to the English names when they read the file.
 
 ## Reading results
 
@@ -124,7 +128,7 @@ On the C031 bench a normal trial measured 4.4-6 s (see above); the table below i
 
 
 Per update trial ≈ 2 OpenOCD reads (~1 s each) + `UPD` reboot + erase (~0.3 s) + transfer
-(~1 s for 7 KB at 115200 baud) + reboot, 1 s confirm and 1 s settle ≈ **6-9 s**. A BEKLİYOR adds
+(~1 s for 7 KB at 115200 baud) + reboot, 1 s confirm and 1 s settle ≈ **6-9 s**. A PENDING adds
 a resume (~4-6 s). A golden flash (recovery) adds ~5-10 s.
 
 | run | trials | about |
@@ -147,8 +151,8 @@ clock and the bench Programmer (it understands `dump_image` and `mdw`), so `--si
 code as hardware. Sim images are generated into `stress_runs/sim_images/`, and sim calibration goes
 to `calibration_sim.json` (made automatically if missing).
 
-What the sim shows (seed 1): `reset_sweep` on A/B gives 255/255 accepted (163 BEKLİYOR + 92 YENİ),
-and on naive 103/174 YANLIŞ (every DATA and HDR point, and some partial erases). This is how the
+What the sim shows (seed 1): `reset_sweep` on A/B gives 255/255 accepted (163 PENDING + 92 NEW),
+and on naive 103/174 WRONG (every DATA and HDR point, and some partial erases). This is how the
 naive control is meant to work. If the A/B sim ever shows a failure, either the sim or the spec
 has a bug: report it.
 
@@ -185,15 +189,15 @@ python -m stress --json run reset_random --target c031 --link vcp       # no ESP
   `calibrate` over the bridge (`TIME ON` timestamps); double_fault always uses the hook.
 - `[esp] port` / `baud` (921600) in stress.toml.
 
-C031 sim (seed 1, every point): `reset_sweep` ab 288/288 accepted (167 BEKLİYOR + 121 YENİ),
-naive 98/174 YANLIŞ; with `--reset-source esp` ab 150/150, naive 58/150 YANLIŞ. `naive_control
---n 60`: 47 YANLIŞ. `reset_random --n 100` and `double_fault --n 100`: all accepted.
+C031 sim (seed 1, every point): `reset_sweep` ab 288/288 accepted (167 PENDING + 121 NEW),
+naive 98/174 WRONG; with `--reset-source esp` ab 150/150, naive 58/150 WRONG. `naive_control
+--n 60`: 47 WRONG. `reset_random --n 100` and `double_fault --n 100`: all accepted.
 
 C031 hardware (2026-11-07, `stress_runs/*_20261107-12*`, summary in `docs/stress/sunum.html`): basic
-4/4 YENİ; transfer_cut 10/10 ESKİ; line_noise at `--rate 0.2` 10/10 YENİ (48 retries); bad_image 2/2;
-rollback 2/2 ESKİ; reset_random 20/20 with the hook and 20/20 with `--reset-source esp`; reset_sweep
+4/4 NEW; transfer_cut 10/10 OLD; line_noise at `--rate 0.2` 10/10 NEW (48 retries); bad_image 2/2;
+rollback 2/2 OLD; reset_random 20/20 with the hook and 20/20 with `--reset-source esp`; reset_sweep
 24/24 (esp, 3 phases) and 57/57 (hook, all 8 phases with `--meta-near-full`); double_fault 10/10;
-naive_control (esp) 11/20 YANLIŞ. Then two 2-hour sweeps (stopped with Ctrl-C after 2 h):
+naive_control (esp) 11/20 WRONG. Then two 2-hour sweeps (stopped with Ctrl-C after 2 h):
 `reset_sweep --seed 2026 --max-points-per-phase 800` (hook, 8 phases) 1493/1493 and the same with
 `--seed 2027 --reset-source esp` (3 phases) 1479/1479. In total 0 failures in 3103 reset-injected A/B
 trials: failure rate < 0.096% with 95% confidence. No ST-Link recovery and no unexpected reset on A/B;

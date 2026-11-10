@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import faults
-from .classify import ESKI, UNSAFE, YENI
+from .classify import OLD, UNSAFE, NEW
 
 BAD_IMAGES = (("bad_crc", "IMG_CRC"), ("wrong_board", "BOARD"), ("truncated", "SHORT"),
               ("oversize", "SIZE"), ("old", "VERSION"))
@@ -162,32 +162,32 @@ def judge(test: str, r: dict) -> tuple[bool, str]:
     """r: the trial facts (outcome, accepted, smoke_ok, err_code, active_unchanged, trial_jumps, rollbacks)."""
     o = r["outcome"]
     if test == "basic":
-        if o != YENI:
-            return False, f"expected YENİ, got {o}"
+        if o != NEW:
+            return False, f"expected NEW, got {o}"
         return (True, "") if r.get("smoke_ok") else (False, "smoke (PING/VER/TICK/UID) failed")
     if test == "transfer_cut":
-        if o != ESKI:
-            return False, f"expected ESKİ, got {o}"
+        if o != OLD:
+            return False, f"expected OLD, got {o}"
         return (True, "") if r.get("active_unchanged") else (False, "active slot hash changed")
     if test == "line_noise":
-        return (o == YENI), ("" if o == YENI else f"expected YENİ, got {o}")
+        return (o == NEW), ("" if o == NEW else f"expected NEW, got {o}")
     if test == "bad_image":
         want = r.get("expect_err")
         if r.get("err_code") != want:
             return False, f"expected ERR {want}, got '{r.get('err_code') or 'no error'}'"
-        if o != ESKI:
-            return False, f"expected ESKİ, got {o}"
+        if o != OLD:
+            return False, f"expected OLD, got {o}"
         return (True, "") if r.get("active_unchanged") else (False, "active slot hash changed")
     if test == "rollback":
-        if o != ESKI:
-            return False, f"expected ESKİ (rolled back), got {o}"
+        if o != OLD:
+            return False, f"expected OLD (rolled back), got {o}"
         if r.get("trial_jumps", 0) > 3:
             return False, f"{r['trial_jumps']} trial attempts (> 3)"
         if not r.get("rollbacks"):
             return False, "no 'BL rollback' line"
         return True, ""
     if test == "calibrate":
-        return (o == YENI), ""
+        return (o == NEW), ""
     # reset_random, reset_sweep, double_fault, naive_control
     return bool(r["accepted"]), ("" if r["accepted"] else f"{o} is not accepted")
 
@@ -200,7 +200,7 @@ def verdict(test: str, rows: list[dict]) -> tuple[bool, str]:
     if test == "naive_control":
         unsafe = sum(1 for r in rows if r.get("outcome") in UNSAFE)
         if unsafe:
-            return True, f"naive control showed {unsafe}/{n} unsafe outcomes (ÖLÜ/YANLIŞ): the test can see failures"
+            return True, f"naive control showed {unsafe}/{n} unsafe outcomes (DEAD/WRONG): the test can see failures"
         return False, (f"naive control showed NO unsafe outcome in {n} trials: the fault injection "
                        "measures nothing (or the naive BL is not naive)")
     if bad == 0:

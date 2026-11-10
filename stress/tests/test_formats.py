@@ -27,15 +27,26 @@ class Csv(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "t.csv"
             log = CsvLog(p)
-            log.write({"trial": 0, "outcome": "YENİ", "accepted": True, "note": "a=1; b=x; free"})
+            log.write({"trial": 0, "outcome": "NEW", "accepted": True, "note": "a=1; b=x; free"})
             with self.assertRaises(KeyError):
                 log.write({"nope": 1})
             log.close()
             rows = read_rows(p)
             self.assertEqual(list(rows[0].keys()), list(COLUMNS))
-            self.assertEqual((rows[0]["accepted"], rows[0]["outcome"]), ("1", "YENİ"))
+            self.assertEqual((rows[0]["accepted"], rows[0]["outcome"]), ("1", "NEW"))
             self.assertEqual(note_kv(rows[0]["note"]), {"a": "1", "b": "x"})
         self.assertEqual((fmt(None), fmt(False), fmt(1.50)), ("", "0", "1.5"))
+
+    def test_read_legacy_outcomes(self):
+        # trials.csv files written before 2026-11-10 carry the Turkish outcome names
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.csv"
+            log = CsvLog(p)
+            for i, o in enumerate(("YENİ", "ESKİ", "BEKLİYOR", "ÖLÜ", "YANLIŞ", "BELİRSİZ", "NEW")):
+                log.write({"trial": i, "outcome": o})
+            log.close()
+            self.assertEqual([r["outcome"] for r in read_rows(p)],
+                             ["NEW", "OLD", "PENDING", "DEAD", "WRONG", "UNCLEAR", "NEW"])
 
 
 class Header(unittest.TestCase):

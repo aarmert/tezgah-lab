@@ -48,7 +48,7 @@ class C031Sim(unittest.TestCase):
 
     def test_basic_and_run_json(self):
         r, rows = self.run_ok("basic", "--n", "3")
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
         self.assertTrue(all("target=c031" in x["bl_line"] for x in rows))
         d = Path(r["report_dir"])
         run = json.loads((d / "run.json").read_text(encoding="utf-8"))
@@ -67,16 +67,16 @@ class C031Sim(unittest.TestCase):
 
     def test_transfer_cut_noise_bad_image_rollback(self):
         _, rows = self.run_ok("transfer_cut", "--n", "6")
-        self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"OLD"})
         _, rows = self.run_ok("line_noise", "--n", "6", "--rate", "0.25")
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
         self.assertGreater(sum(int(x["retries"]) for x in rows), 0)
         _, rows = self.run_ok("bad_image", "--n", "5")
         got = {x["image"].rsplit("_", 1)[0]: x["err_code"] for x in rows}
         self.assertEqual(got, {"bad_crc": "IMG_CRC", "wrong_board": "BOARD", "truncated": "SHORT",
                                "oversize": "SIZE", "old": "VERSION"})
         _, rows = self.run_ok("rollback", "--n", "3")
-        self.assertEqual({x["outcome"] for x in rows}, {"ESKİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"OLD"})
         self.assertEqual({x["attempts"] for x in rows}, {"3"})
 
     def test_reset_tests_hook_all_accepted(self):
@@ -101,7 +101,7 @@ class C031Sim(unittest.TestCase):
     def test_naive_control_sees_failures(self):
         r = cli("run", "naive_control", "--n", "8", "--sim", "--target", "c031")
         self.assertTrue(r["ok"], r)
-        self.assertTrue(any(x["outcome"] in ("ÖLÜ", "YANLIŞ") for x in rows_of(r)))
+        self.assertTrue(any(x["outcome"] in ("DEAD", "WRONG") for x in rows_of(r)))
 
     def test_reset_source_esp(self):
         for test, n in (("reset_random", "10"), ("reset_sweep", "20")):
@@ -117,7 +117,7 @@ class C031Sim(unittest.TestCase):
         r = cli("run", "naive_control", "--n", "8", "--sim", "--target", "c031", "--reset-source", "esp")
         self.assertTrue(r["ok"], r)
         rows = rows_of(r)
-        self.assertTrue(any(x["outcome"] in ("ÖLÜ", "YANLIŞ") for x in rows))
+        self.assertTrue(any(x["outcome"] in ("DEAD", "WRONG") for x in rows))
         self.assertEqual({x["fault_type"] for x in rows}, {"nrst_esp"})
 
     def test_link_vcp(self):
@@ -235,7 +235,7 @@ class HardwarePathWiring(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(sorted(opened), [("/dev/esp-test", 921600), ("/dev/vcp-test", 115200)])
         rows = rows_of(r)
-        self.assertEqual({x["outcome"] for x in rows}, {"YENİ"})
+        self.assertEqual({x["outcome"] for x in rows}, {"NEW"})
         self.assertFalse(any("witness_mismatch" in x["note"] for x in rows))
         log = (Path(r["report_dir"]) / "serial.log").read_text(encoding="utf-8")
         self.assertIn(" V BOOT app", log)
