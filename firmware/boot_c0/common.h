@@ -1,7 +1,7 @@
 /*
  * Shared declarations for the C0 bootloaders and apps (register level, no HAL).
  * STM32C031C6 (Cortex-M0+, ARMv6-M). Register addresses: RM0490. Items marked (verify) in
- * docs/stress/SPEC-C031C6.md are listed in README.md with what was and was not confirmed.
+ * public/stress/SPEC-C031C6.md are listed in README.md with what was and was not confirmed.
  */
 #ifndef COMMON_H
 #define COMMON_H

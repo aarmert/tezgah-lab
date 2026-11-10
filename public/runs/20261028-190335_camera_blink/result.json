@@ -1,0 +1,103 @@
+{
+  "ok": true,
+  "command": "run",
+  "plan": "camera_blink",
+  "plan_file": "~/stm32bench/plans/camera_blink.toml",
+  "summary": "camera_blink: 10/10 adım geçti.",
+  "duration_s": 68.26,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.829
+    },
+    {
+      "step": 2,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=SFT,PIN'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 3,
+      "name": "send BLINK 1",
+      "ok": true,
+      "summary": "'OK BLINK 1'",
+      "duration_s": 0.013
+    },
+    {
+      "step": 4,
+      "name": "kamera: 1 Hz",
+      "ok": true,
+      "summary": "0.995 Hz, doluluk 0.51 (yükselen 4, düşen 3 kenar, kontrast 162); bölge [837, 777, 30, 30] (otomatik), 108 kare, 30.0 fps; video cam_step04.mp4, işaretli kare cam_step04_roi.jpg; adaylar (852,792) std 84.1, (1662,888) std 76.6, (780,804) std 62.6 ([0.9, 1.1] Hz aralığında)",
+      "duration_s": 21.961
+    },
+    {
+      "step": 5,
+      "name": "send BLINK 2",
+      "ok": true,
+      "summary": "'OK BLINK 2'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 6,
+      "name": "kamera: 2 Hz",
+      "ok": true,
+      "summary": "1.985 Hz, doluluk 0.50 (yükselen 5, düşen 5 kenar, kontrast 168); bölge [837, 783, 30, 30] (otomatik), 77 kare, 30.0 fps; video cam_step06.mp4, işaretli kare cam_step06_roi.jpg; adaylar (852,798) std 84.1, (1656,888) std 76.4, (780,804) std 62.5 ([1.8, 2.2] Hz aralığında)",
+      "duration_s": 16.607
+    },
+    {
+      "step": 7,
+      "name": "send BLINK 4",
+      "ok": true,
+      "summary": "'OK BLINK 4'",
+      "duration_s": 0.017
+    },
+    {
+      "step": 8,
+      "name": "kamera: 4 Hz",
+      "ok": true,
+      "summary": "4.007 Hz, doluluk 0.53 (yükselen 10, düşen 11 kenar, kontrast 168); bölge [837, 783, 30, 30] (otomatik), 78 kare, 30.0 fps; video cam_step08.mp4, işaretli kare cam_step08_roi.jpg; adaylar (852,798) std 83.7, (1656,888) std 76.5, (780,804) std 62.4 ([3.6, 4.4] Hz aralığında)",
+      "duration_s": 16.813
+    },
+    {
+      "step": 9,
+      "name": "send LED G ON",
+      "ok": true,
+      "summary": "'OK LED G ON'",
+      "duration_s": 0.018
+    },
+    {
+      "step": 10,
+      "name": "kamera: LED sabit yanıyor",
+      "ok": true,
+      "summary": "LED sabit açık: seviye 241 (eşik 159, önceki açık/kapalı 243/75), 0 geçiş; bölge [837, 783, 30, 30] (önceki cam_blink adımı), 46 kare, 30.0 fps; video cam_step10.mp4, işaretli kare cam_step10_roi.jpg",
+      "duration_s": 11.845
+    }
+  ],
+  "recovery": {
+    "attempted": false
+  },
+  "report_dir": "~/stm32bench/runs/20261028-190335_camera_blink",
+  "meta": {
+    "started": "2026-10-28T19:03:35",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "openocd",
+    "programmer_version": "0.12.0",
+    "probe_serial": "<stlink-serial>",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-2>",
+    "source": "debug portu, mem 0x1FFF7A10",
+    "finished": "2026-10-28T19:04:43"
+  },
+  "audit_hash": "cb25bf3313255b77322b84c744366c3e8a89ce48bf06b0b00ad74ce41afce70c"
+}

@@ -1,5 +1,5 @@
 /*
- * Flash/RAM layout of the bootloader stress test on the NUCLEO-C031C6 (docs/stress/SPEC-C031C6.md
+ * Flash/RAM layout of the bootloader stress test on the NUCLEO-C031C6 (public/stress/SPEC-C031C6.md
  * section 1). Mirrored in stress/layout_c031.py; mkimage.py parses this file. Keep them in sync.
  */
 #ifndef LAYOUT_H

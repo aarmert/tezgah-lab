@@ -1,0 +1,13 @@
+   0.000 # flash firmware/build/stm32bench-fw.elf
+   0.217 < BOOT stm32bench-fw v1.2.0 reset=PIN,SFT
+   0.217 # reset
+   0.221 < BOOT stm32bench-fw v1.2.0 reset=PIN,SFT
+   0.221 > VDD
+   0.221 < VDD 3000
+   0.221 > TEMP
+   0.221 < TEMP 30.0
+   0.221 > TICK
+   0.222 < TICK 4
+   0.222 # clock_check: 5 sn bekleniyor
+   5.222 > TICK
+   5.222 < TICK 5005

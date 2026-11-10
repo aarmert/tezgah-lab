@@ -1,0 +1,98 @@
+{
+  "ok": false,
+  "command": "run",
+  "plan": "measure",
+  "plan_file": "~/stm32bench/plans/measure.toml",
+  "summary": "measure: 6. adımda başarısız: saat oranı 0.9943 beklenen aralık [-2.0, -1.0] dışında; kart 1002 ms, PC 1007.7 ms (±15.4 ms).",
+  "duration_s": 2.33,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.827
+    },
+    {
+      "step": 2,
+      "name": "reset",
+      "ok": true,
+      "summary": "Kart resetlendi.",
+      "duration_s": 0.148
+    },
+    {
+      "step": 3,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=SFT,PIN'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 4,
+      "name": "besleme gerilimi (mV)",
+      "ok": true,
+      "summary": "'VDD 2952' (değer 2952 [2850, 3150] aralığında)",
+      "duration_s": 0.007
+    },
+    {
+      "step": 5,
+      "name": "çip sıcaklığı (°C)",
+      "ok": true,
+      "summary": "'TEMP 29.6' (değer 29.6 [15, 60] aralığında)",
+      "duration_s": 0.016
+    },
+    {
+      "step": 6,
+      "name": "kart saati / PC saati",
+      "ok": false,
+      "error_type": "value_out_of_range",
+      "summary": "saat oranı 0.9943 beklenen aralık [-2.0, -1.0] dışında; kart 1002 ms, PC 1007.7 ms (±15.4 ms).",
+      "likely_causes": [
+        "SysTick reload değeri yanlış hesaplanmış (HSI_HZ / 1000 - 1 olmalı)",
+        "Saat kaynağı veya frekansı firmware'in varsaydığı gibi değil (HSI 16 MHz, PLL yok)",
+        "HSI kalibrasyonu bozuk (RCC_CR HSITRIM)",
+        "Kesmeler uzun süre kapalı kalıyor, SysTick kesmeleri kaçıyor"
+      ],
+      "details": null,
+      "duration_s": 1.023
+    }
+  ],
+  "recovery": {
+    "attempted": true,
+    "ok": true,
+    "actions": [
+      {
+        "action": "reset",
+        "ok": true,
+        "line": "BOOT stm32bench-fw v1.2.0 reset=SFT,PIN"
+      }
+    ]
+  },
+  "report_dir": "~/stm32bench/runs/20261028-184431_measure_negatif",
+  "meta": {
+    "started": "2026-10-28T18:44:31",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "openocd",
+    "programmer_version": "0.12.0",
+    "probe_serial": "<stlink-serial>",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-2>",
+    "source": "debug portu, mem 0x1FFF7A10",
+    "finished": "2026-10-28T18:44:34"
+  },
+  "error_type": "value_out_of_range",
+  "likely_causes": [
+    "SysTick reload değeri yanlış hesaplanmış (HSI_HZ / 1000 - 1 olmalı)",
+    "Saat kaynağı veya frekansı firmware'in varsaydığı gibi değil (HSI 16 MHz, PLL yok)",
+    "HSI kalibrasyonu bozuk (RCC_CR HSITRIM)",
+    "Kesmeler uzun süre kapalı kalıyor, SysTick kesmeleri kaçıyor"
+  ],
+  "audit_hash": "e895479c544487c1180e351c1b3486f7258475364d943da23c263672e9d17e1a"
+}

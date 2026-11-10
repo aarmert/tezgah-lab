@@ -12,3 +12,4 @@ firmware/boot_c0/build/
 .venv/
 esp32/build/
 bench-c031.toml
+!public/stress_runs/

@@ -17,7 +17,7 @@ It holds two benches:
   microsecond timing. A deliberately unsafe bootloader is tested the same way as a control.
 
 <p align="center">
-  <img src="docs/egitim/foto/genel.jpg" width="360"
+  <img src="public/foto/genel.jpg" width="360"
        alt="The C031 bench: an ESP32-S3 wired to a NUCLEO-C031C6 with four jumper wires">
 </p>
 <p align="center"><em>The C031 bench: the ESP32-S3 bridge (top) and the NUCLEO-C031C6.</em></p>
@@ -39,9 +39,12 @@ It holds two benches:
 | NUCLEO-C031C6, naive bootloader (control) | 11 of 20 reset-injected updates booted a corrupt image, as the control is meant to show |
 | F407 Discovery | `smoke`, `crash_recovery`, `measure` and `camera_blink` pass on the real board, each with its negative check (2026-10-28) |
 
+The raw data for these rows (trial CSVs, serial logs, reports, camera videos) and the Turkish PDFs
+are in [`public/`](public/README.md).
+
 The F407 port of the stress test (`firmware/boot/`) has only run in the simulator so far. The full
 numbers are in [`stress/README.md`](stress/README.md), and the slide deck is
-[`docs/stress/sunum.html`](docs/stress/sunum.html) (Turkish; GitHub shows its source, so download it
+[`public/stress/sunum.html`](public/stress/sunum.html) (Turkish; GitHub shows its source, so download it
 and open it in a browser).
 
 ## Try it without hardware
@@ -103,7 +106,7 @@ The last command fails on purpose. This is what a failed result looks like:
 | `report --plot` | matplotlib (the `plot` group) |
 
 The Python packages are declared in `pyproject.toml` and pinned in `uv.lock`. `uv sync` creates
-`.venv` with all of them (pyserial, plus the `camera`, `plot`, `docs`, `esp32`, and `dev` groups).
+`.venv` with all of them (pyserial, plus the `camera`, `plot`, `esp32`, and `dev` groups).
 
 Config files: the F407 bench reads `bench.toml`, and the C031 bench reads `bench-c031.toml` and
 `stress.toml`. Each has an `.example` template to copy.
@@ -411,8 +414,8 @@ decides to undo them.
 | `esp32/bridge/` | ESP32-S3 serial bridge with a timed NRST pulse ([README](esp32/bridge/README.md)) |
 | `camera/` | The phone camera tool: Bun, TypeScript, scrcpy ([`camera/README.md`](camera/README.md)) |
 | `.opencode/plugins/android-camera/` | The `android_take_photo` tool for OpenCode |
-| `docs/stress/` | The stress-test specs: [`SPEC.md`](docs/stress/SPEC.md), [`SPEC-C031C6.md`](docs/stress/SPEC-C031C6.md), [`SPEC-ESP32.md`](docs/stress/SPEC-ESP32.md) |
-| `docs/egitim/` | Generators for the Turkish training booklet and the 3000-trial report, and the bench photos. The PDFs are built locally and are not committed. |
+| `public/stress/` | The stress-test specs: [`SPEC.md`](public/stress/SPEC.md), [`SPEC-C031C6.md`](public/stress/SPEC-C031C6.md), [`SPEC-ESP32.md`](public/stress/SPEC-ESP32.md) |
+| `public/` | The run data behind the results table, the Turkish training booklet and 3000-trial report (PDF), and the bench photo ([README](public/README.md)) |
 | `setup_ubuntu.sh` | Installs the F407 bench's dependencies on Ubuntu |
 | `AGENTS.md` | The rules a coding agent follows in this folder (`CLAUDE.md` imports it) |
 

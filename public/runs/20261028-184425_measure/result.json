@@ -1,0 +1,75 @@
+{
+  "ok": true,
+  "command": "run",
+  "plan": "measure",
+  "plan_file": "~/stm32bench/plans/measure.toml",
+  "summary": "measure: 6/6 adım geçti.",
+  "duration_s": 6.18,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.816
+    },
+    {
+      "step": 2,
+      "name": "reset",
+      "ok": true,
+      "summary": "Kart resetlendi.",
+      "duration_s": 0.155
+    },
+    {
+      "step": 3,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=SFT,PIN'",
+      "duration_s": 0.002
+    },
+    {
+      "step": 4,
+      "name": "besleme gerilimi (mV)",
+      "ok": true,
+      "summary": "'VDD 2954' (değer 2954 [2850, 3150] aralığında)",
+      "duration_s": 0.016
+    },
+    {
+      "step": 5,
+      "name": "çip sıcaklığı (°C)",
+      "ok": true,
+      "summary": "'TEMP 29.6' (değer 29.6 [15, 60] aralığında)",
+      "duration_s": 0.016
+    },
+    {
+      "step": 6,
+      "name": "kart saati / PC saati",
+      "ok": true,
+      "summary": "oran 0.9948: kart 4980 ms, PC 5005.9 ms (±13.4 ms) ([0.97, 1.03] aralığında)",
+      "duration_s": 5.019
+    }
+  ],
+  "recovery": {
+    "attempted": false
+  },
+  "report_dir": "~/stm32bench/runs/20261028-184425_measure",
+  "meta": {
+    "started": "2026-10-28T18:44:25",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "openocd",
+    "programmer_version": "0.12.0",
+    "probe_serial": "<stlink-serial>",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-2>",
+    "source": "debug portu, mem 0x1FFF7A10",
+    "finished": "2026-10-28T18:44:31"
+  },
+  "audit_hash": "e895479c544487c1180e351c1b3486f7258475364d943da23c263672e9d17e1a"
+}

@@ -14,7 +14,7 @@ from stress.sim import SimBoard
 from stress.simimages import make_golden, make_image, write_image_set
 from stress.stlink import bin_to_ihex, ihex_to_segments
 
-SPEC = Path(__file__).resolve().parents[2] / "docs" / "stress" / "SPEC.md"
+SPEC = Path(__file__).resolve().parents[2] / "public" / "stress" / "SPEC.md"
 
 
 class Csv(unittest.TestCase):

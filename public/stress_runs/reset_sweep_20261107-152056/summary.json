@@ -1,0 +1,106 @@
+{
+  "test": "reset_sweep",
+  "design": "ab",
+  "n": 1493,
+  "seed": 2026,
+  "sim": false,
+  "interrupted": true,
+  "verdict": {
+    "ok": true,
+    "summary": "1493/1493 trials met the pass criterion"
+  },
+  "counts": {
+    "YANLIŞ": 0,
+    "ÖLÜ": 0,
+    "BEKLİYOR": 960,
+    "ESKİ": 0,
+    "YENİ": 533,
+    "BELİRSİZ": 0
+  },
+  "accepted": 1493,
+  "failure": {
+    "failures": 0,
+    "n": 1493,
+    "rate": 0.0,
+    "upper95": 0.0020045068898012497,
+    "method": "exact zero-failure bound 1-0.05^(1/N)",
+    "rule_of_three": 0.0020093770931011385,
+    "cp95_two_sided": [
+      0.0,
+      0.002467733418774376
+    ]
+  },
+  "unsafe": {
+    "failures": 0,
+    "n": 1493,
+    "rate": 0.0,
+    "upper95": 0.0020045068898012497,
+    "method": "exact zero-failure bound 1-0.05^(1/N)",
+    "rule_of_three": 0.0020093770931011385,
+    "cp95_two_sided": [
+      0.0,
+      0.002467733418774376
+    ]
+  },
+  "not_accepted": 0,
+  "per_phase": {
+    "CONFIRM": {
+      "YENİ": 108
+    },
+    "DATA": {
+      "BEKLİYOR": 408
+    },
+    "HDR": {
+      "BEKLİYOR": 139
+    },
+    "BOOT": {
+      "YENİ": 400
+    },
+    "META": {
+      "BEKLİYOR": 19,
+      "YENİ": 25
+    },
+    "ERASE": {
+      "BEKLİYOR": 394
+    }
+  },
+  "update_s": {
+    "n": 533,
+    "median": 2.464,
+    "p95": 3.472,
+    "max": 3.497
+  },
+  "recovery_s": {
+    "n": 0,
+    "median": null,
+    "p95": null,
+    "max": null
+  },
+  "resume_s": {
+    "n": 960,
+    "median": 3.779,
+    "p95": 3.79105,
+    "max": 3.814
+  },
+  "rollback_s": {
+    "n": 0,
+    "median": null,
+    "p95": null,
+    "max": null
+  },
+  "throughput_Bps": {
+    "n": 533,
+    "median": 4765.4,
+    "p95": 4772.099999999999,
+    "max": 4828.6
+  },
+  "retries_total": 0,
+  "fault_fired_trials": 1493,
+  "stlink_needed": 0,
+  "wear": {
+    "slot_erases_A": "1415",
+    "slot_erases_B": "1463",
+    "meta_erases0": "36",
+    "meta_erases1": "36"
+  }
+}

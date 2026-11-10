@@ -1,0 +1,12 @@
+   0.000 # flash firmware/build/stm32bench-fw.elf
+   0.846 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   0.846 > CRASH
+   0.868 < OK CRASH
+   0.868 < HARDFAULT pc=0x080006C6 lr=0x080000D7 cfsr=0x00010000 hfsr=0x40000000
+   0.868 > PING
+   1.878 # reset
+   2.034 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   2.034 > PING
+   2.050 < PONG
+   3.058 # recovery: reset
+   3.217 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN

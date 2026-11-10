@@ -1,9 +1,9 @@
 # firmware/boot_c0: bootloader stress-test firmware for the NUCLEO-C031C6
 
 The C0 port of [`firmware/boot`](../boot/README.md) (the F407 reference). The contract is
-[`docs/stress/SPEC.md`](../../docs/stress/SPEC.md) with the overrides of
-[`SPEC-C031C6.md`](../../docs/stress/SPEC-C031C6.md) and the two-UART rule of
-[`SPEC-ESP32.md`](../../docs/stress/SPEC-ESP32.md) §1. Protocol, meta log, boot decision, app
+[`public/stress/SPEC.md`](../../public/stress/SPEC.md) with the overrides of
+[`SPEC-C031C6.md`](../../public/stress/SPEC-C031C6.md) and the two-UART rule of
+[`SPEC-ESP32.md`](../../public/stress/SPEC-ESP32.md) §1. Protocol, meta log, boot decision, app
 runtime and fault hook semantics are the F407's. This file only describes what is different.
 
 Bare-metal C, no HAL. STM32C031C6 (Cortex-M0+, ARMv6-M), HSI48 at 48 MHz, 32 KB flash, 12 KB RAM.

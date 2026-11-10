@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Makes the NUCLEO-C031C6 update images, the golden flash images and manifest.json
-(docs/stress/SPEC.md section 2 with the docs/stress/SPEC-C031C6.md section 2 overrides: 256 B
+(public/stress/SPEC.md section 2 with the public/stress/SPEC-C031C6.md section 2 overrides: 256 B
 header, header CRC at 252, payload a multiple of 8, board_id 0xC031C600, 32 KB goldens).
 
     python firmware/boot_c0/mkimage.py                   # all images from firmware/boot_c0/build/

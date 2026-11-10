@@ -1,0 +1,121 @@
+{
+  "ok": false,
+  "command": "run",
+  "plan": "smoke",
+  "plan_file": "~/stm32bench/plans/smoke.toml",
+  "summary": "smoke: 10. adımda başarısız: 'FOO' komutuna 1 sn içinde /^ERR unknown command$__BU_SATIR_ESLESMEMELI__/ desenine uyan satır gelmedi.",
+  "duration_s": 2.42,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.831
+    },
+    {
+      "step": 2,
+      "name": "reset",
+      "ok": true,
+      "summary": "Kart resetlendi.",
+      "duration_s": 0.162
+    },
+    {
+      "step": 3,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=SFT,PIN'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 4,
+      "name": "send PING",
+      "ok": true,
+      "summary": "'PONG'",
+      "duration_s": 0.009
+    },
+    {
+      "step": 5,
+      "name": "send VER",
+      "ok": true,
+      "summary": "'VER 1.2.0'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 6,
+      "name": "send TICK",
+      "ok": true,
+      "summary": "'TICK 35' (değer 35 [1, 600000] aralığında)",
+      "duration_s": 0.016
+    },
+    {
+      "step": 7,
+      "name": "send UID",
+      "ok": true,
+      "summary": "'UID <board-uid-2>'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 8,
+      "name": "send LED O ON",
+      "ok": true,
+      "summary": "'OK LED O ON'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 9,
+      "name": "send LED O OFF",
+      "ok": true,
+      "summary": "'OK LED O OFF'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 10,
+      "name": "send FOO",
+      "ok": false,
+      "error_type": "expect_timeout",
+      "summary": "'FOO' komutuna 1 sn içinde /^ERR unknown command$__BU_SATIR_ESLESMEMELI__/ desenine uyan satır gelmedi.",
+      "likely_causes": [
+        "Cevap geldi ama beklenen desene uymadı: aşağıdaki satırlara bak"
+      ],
+      "details": "Son seri trafik:\n> VER\n< VER 1.2.0\n> TICK\n< TICK 35\n> UID\n< UID <board-uid-2>\n> LED O ON\n< OK LED O ON\n> LED O OFF\n< OK LED O OFF\n> FOO\n< ERR unknown command",
+      "duration_s": 1.024
+    }
+  ],
+  "recovery": {
+    "attempted": true,
+    "ok": true,
+    "actions": [
+      {
+        "action": "reset",
+        "ok": true,
+        "line": "BOOT stm32bench-fw v1.2.0 reset=SFT,PIN"
+      }
+    ]
+  },
+  "report_dir": "~/stm32bench/runs/20261028-184417_smoke_negatif",
+  "meta": {
+    "started": "2026-10-28T18:44:17",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "openocd",
+    "programmer_version": "0.12.0",
+    "probe_serial": "<stlink-serial>",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-2>",
+    "source": "debug portu, mem 0x1FFF7A10, seri porttaki UID ile aynı",
+    "finished": "2026-10-28T18:44:19"
+  },
+  "error_type": "expect_timeout",
+  "likely_causes": [
+    "Cevap geldi ama beklenen desene uymadı: aşağıdaki satırlara bak"
+  ],
+  "details": "Son seri trafik:\n> VER\n< VER 1.2.0\n> TICK\n< TICK 35\n> UID\n< UID <board-uid-2>\n> LED O ON\n< OK LED O ON\n> LED O OFF\n< OK LED O OFF\n> FOO\n< ERR unknown command",
+  "audit_hash": "c006bac30ca6fd522d99d9f9c52bbdfa9bb74f5b5fe968d143916ce006377247"
+}

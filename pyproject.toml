@@ -19,14 +19,6 @@ camera = [
 plot = [
     "matplotlib>=3.8",
 ]
-# docs/egitim PDF generators
-docs = [
-    "matplotlib>=3.8",
-    "numpy>=1.26",
-    "pillow>=10",
-    "pymupdf>=1.24",
-    "reportlab>=4.1",
-]
 # ESP32 flashing/REPL tools for the human (agents must not upload, see AGENTS.md)
 esp32 = [
     "esptool>=4.7",
@@ -39,7 +31,7 @@ dev = [
 [tool.uv]
 # Scripts run from the repo root (python bench.py, python -m stress); nothing to build or install.
 package = false
-# Plain `uv sync` installs every group, so it never strips camera/docs/esp32 tools from .venv.
+# Plain `uv sync` installs every group, so it never strips camera/esp32 tools from .venv.
 default-groups = "all"
 
 [tool.ruff]

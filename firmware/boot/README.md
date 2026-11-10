@@ -1,7 +1,7 @@
 # firmware/boot: bootloader stress-test firmware
 
 Firmware half of the bootloader stress test. The binding contract is
-[`docs/stress/SPEC.md`](../../docs/stress/SPEC.md). The host tool (`stress/`) is built against
+[`public/stress/SPEC.md`](../../public/stress/SPEC.md). The host tool (`stress/`) is built against
 the same spec. Bare-metal C, no HAL, STM32F407G-DISC1, HSI 16 MHz, USART2 115200 8N1.
 
 The original test firmware (`firmware/main.c`, `build.py`, `plans/smoke.toml`) is unchanged and

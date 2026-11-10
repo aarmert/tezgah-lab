@@ -1,4 +1,4 @@
-// tezgah-bridge 0.1: ESP32-S3 line bridge with a precisely timed NRST (docs/stress/SPEC-ESP32.md 2).
+// tezgah-bridge 0.1: ESP32-S3 line bridge with a precisely timed NRST (public/stress/SPEC-ESP32.md 2).
 //
 // PC  <-> ESP32-S3 UART0 (CH343 USB "UART" port), 921600 8N1, one command per line.
 // ESP <-> STM32 (NUCLEO-C031C6 USART1 PA9/PA10), UART1 TX=GPIO17 RX=GPIO18, 115200 8N1.

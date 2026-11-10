@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Builds the bootloader stress-test firmware (docs/stress/SPEC.md) into firmware/boot/build/:
+Builds the bootloader stress-test firmware (public/stress/SPEC.md) into firmware/boot/build/:
 
   bl_ab, bl_ab_hooks, bl_naive, bl_naive_hooks         (.elf/.bin/.map, S0 @ 0x08000000)
   app_<variant>_<A|B>[_nohooks]                        (.elf/.bin/.map, slot_base + 0x200)

@@ -2,8 +2,8 @@
 
 Host half of the bootloader stress test for the STM32F407G-DISC1 bench and (`--target c031`) the
 NUCLEO-C031C6 + ESP32-S3 bench. The contract with the firmware (`firmware/boot/`, `firmware/boot_c0/`,
-`esp32/bridge/`) is [`docs/stress/SPEC.md`](../docs/stress/SPEC.md) with the addenda
-[`SPEC-C031C6.md`](../docs/stress/SPEC-C031C6.md) and [`SPEC-ESP32.md`](../docs/stress/SPEC-ESP32.md).
+`esp32/bridge/`) is [`public/stress/SPEC.md`](../public/stress/SPEC.md) with the addenda
+[`SPEC-C031C6.md`](../public/stress/SPEC-C031C6.md) and [`SPEC-ESP32.md`](../public/stress/SPEC-ESP32.md).
 Python 3.12+, stdlib + pyserial. matplotlib is optional (`report --plot`).
 
 The tool uses `bench.py` without changing it: `Config`, `make_programmer` (OpenOCD backend only:
@@ -158,7 +158,7 @@ has a bug: report it.
 
 ## NUCLEO-C031C6 target and the ESP32-S3 bridge
 
-`--target c031` (default `f407`) runs the same tests on the NUCLEO-C031C6 (`docs/stress/SPEC-C031C6.md`)
+`--target c031` (default `f407`) runs the same tests on the NUCLEO-C031C6 (`public/stress/SPEC-C031C6.md`)
 with its own layout (`stress/layout_c031.py`: 2 KB pages, 256 B header, header_crc at 252, payload at
 slot + 0x100, 8-byte alignment, one 400-char line limit, RAM top 0x20003000, board id 0xC031C600,
 BEGIN reply 1 s), images (`[c031] images_dir`, default `firmware/boot_c0/build/images`; manifest
@@ -166,7 +166,7 @@ entries must say `"target": "c031"`), bench config (`bench-c031.toml`, from `ben
 never bench.toml) and calibration (`calibration_c031.json`). The BL status line must say
 `target=c031`, or the run stops (`wrong_firmware`). `run.json` records `target`, `link`, `reset_source`.
 
-The C031 bench talks through the ESP32-S3 bridge (`esp32/bridge`, `docs/stress/SPEC-ESP32.md`):
+The C031 bench talks through the ESP32-S3 bridge (`esp32/bridge`, `public/stress/SPEC-ESP32.md`):
 
 ```
 python3 esp32/build.py --json                                          # compile only
@@ -193,7 +193,7 @@ C031 sim (seed 1, every point): `reset_sweep` ab 288/288 accepted (167 PENDING +
 naive 98/174 WRONG; with `--reset-source esp` ab 150/150, naive 58/150 WRONG. `naive_control
 --n 60`: 47 WRONG. `reset_random --n 100` and `double_fault --n 100`: all accepted.
 
-C031 hardware (2026-11-07, `stress_runs/*_20261107-12*`, summary in `docs/stress/sunum.html`): basic
+C031 hardware (2026-11-07, `stress_runs/*_20261107-12*`, summary in `public/stress/sunum.html`): basic
 4/4 NEW; transfer_cut 10/10 OLD; line_noise at `--rate 0.2` 10/10 NEW (48 retries); bad_image 2/2;
 rollback 2/2 OLD; reset_random 20/20 with the hook and 20/20 with `--reset-source esp`; reset_sweep
 24/24 (esp, 3 phases) and 57/57 (hook, all 8 phases with `--meta-near-full`); double_fault 10/10;

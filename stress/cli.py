@@ -561,7 +561,7 @@ def cmd_doctor(args, scfg: StressConfig) -> dict:
 
 # --- parser -----------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m stress", description="Bootloader stress test (docs/stress/SPEC.md)")
+    p = argparse.ArgumentParser(prog="python -m stress", description="Bootloader stress test (public/stress/SPEC.md)")
     p.add_argument("--json", action="store_true", help="JSON result (ok, error_type, summary, likely_causes)")
     p.add_argument("--config", help="bench.toml path (default: next to bench.py)")
     p.add_argument("--stress-config", help="stress.toml path (default: repo root)")

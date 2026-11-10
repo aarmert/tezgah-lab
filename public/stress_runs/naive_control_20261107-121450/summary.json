@@ -1,0 +1,96 @@
+{
+  "test": "naive_control",
+  "design": "naive",
+  "n": 20,
+  "seed": 7,
+  "sim": false,
+  "interrupted": false,
+  "verdict": {
+    "ok": true,
+    "summary": "naive control showed 11/20 unsafe outcomes (ÖLÜ/YANLIŞ): the test can see failures"
+  },
+  "counts": {
+    "YANLIŞ": 11,
+    "ÖLÜ": 0,
+    "BEKLİYOR": 7,
+    "ESKİ": 0,
+    "YENİ": 2,
+    "BELİRSİZ": 0
+  },
+  "accepted": 9,
+  "failure": {
+    "failures": 11,
+    "n": 20,
+    "rate": 0.55,
+    "upper95": 0.7413493902510875,
+    "method": "Clopper-Pearson one-sided 95%",
+    "cp95_two_sided": [
+      0.3152781330405481,
+      0.7694221032240756
+    ]
+  },
+  "unsafe": {
+    "failures": 11,
+    "n": 20,
+    "rate": 0.55,
+    "upper95": 0.7413493902510875,
+    "method": "Clopper-Pearson one-sided 95%",
+    "cp95_two_sided": [
+      0.3152781330405481,
+      0.7694221032240756
+    ]
+  },
+  "not_accepted": 11,
+  "per_phase": {
+    "DATA": {
+      "YANLIŞ": 2
+    },
+    "ERASE": {
+      "YANLIŞ": 8,
+      "BEKLİYOR": 7
+    },
+    "HDR": {
+      "YENİ": 2,
+      "YANLIŞ": 1
+    }
+  },
+  "update_s": {
+    "n": 2,
+    "median": 1.419,
+    "p95": 1.4226,
+    "max": 1.423
+  },
+  "recovery_s": {
+    "n": 11,
+    "median": 10.185,
+    "p95": 10.199,
+    "max": 10.199
+  },
+  "resume_s": {
+    "n": 7,
+    "median": 2.754,
+    "p95": 2.7622,
+    "max": 2.764
+  },
+  "rollback_s": {
+    "n": 0,
+    "median": null,
+    "p95": null,
+    "max": null
+  },
+  "throughput_Bps": {
+    "n": 2,
+    "median": 4856.35,
+    "p95": 4860.264999999999,
+    "max": 4860.7
+  },
+  "retries_total": 0,
+  "fault_fired_trials": 20,
+  "stlink_needed": 11,
+  "wear": {
+    "slot_erases_A": "89",
+    "slot_erases_B": "56",
+    "meta_erases0": "",
+    "meta_erases1": ""
+  }
+}

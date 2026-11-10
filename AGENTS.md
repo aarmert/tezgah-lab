@@ -8,12 +8,11 @@ This folder has two STM32 test benches. Touch a board only through `bench.py` or
 - `firmware/`: the test firmware on the board (`stm32bench-fw`) and `build.py`
 - `camera/`: the phone camera tool (Bun + TypeScript, scrcpy/adb/ffmpeg). The `cam_blink` step uses it.
 - `.opencode/plugins/android-camera/`: the `android_take_photo` tool for OpenCode (uses the `camera/` code)
-- `docs/raporlar/`: trial reports
 - `stress/`, `stress_runs/`: the bootloader stress-test host tool and its results (`stress/README.md`)
 - `firmware/boot_c0/`, `firmware/boot/`: stress-test bootloaders + apps for the C031 and the F407
 - `esp32/bridge/`, `esp32/build.py`: the ESP32-S3 line bridge with a timed NRST
-- `docs/stress/`: the stress-test specs (`SPEC.md` + `SPEC-C031C6.md` + `SPEC-ESP32.md`) and the results deck
-- `docs/egitim/`: Turkish training booklet (PDF + its generator)
+- `public/stress/`: the stress-test specs (`SPEC.md` + `SPEC-C031C6.md` + `SPEC-ESP32.md`) and the results deck
+- `public/`: published run data and the Turkish PDFs (training booklet, 3103-trial report)
 
 ## Hardware
 F407 bench (`bench.toml`, the `plans/` and `bench.py` commands below):

@@ -1,4 +1,4 @@
-# Bench config for the NUCLEO-C031C6 (+ ESP32-S3 bridge) bench (docs/stress/SPEC-C031C6.md 10).
+# Bench config for the NUCLEO-C031C6 (+ ESP32-S3 bridge) bench (public/stress/SPEC-C031C6.md 10).
 # Copy to bench-c031.toml (gitignored) and fill in the serial numbers. bench.toml stays the F407's.
 # `python -m stress ... --target c031` uses bench-c031.toml automatically ([c031] bench_config in
 # stress.toml, or --config). Relative paths are from this file's folder.

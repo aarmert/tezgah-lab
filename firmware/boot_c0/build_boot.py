@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Builds the NUCLEO-C031C6 bootloader stress-test firmware (docs/stress/SPEC.md +
-docs/stress/SPEC-C031C6.md + docs/stress/SPEC-ESP32.md 1) into firmware/boot_c0/build/:
+Builds the NUCLEO-C031C6 bootloader stress-test firmware (public/stress/SPEC.md +
+public/stress/SPEC-C031C6.md + public/stress/SPEC-ESP32.md 1) into firmware/boot_c0/build/:
 
   bl_ab, bl_ab_hooks, bl_naive, bl_naive_hooks         (.elf/.bin/.map, pages 0-5 @ 0x08000000)
   app_<variant>_<A|B>[_nohooks]                        (.elf/.bin/.map, slot_base + 0x100)

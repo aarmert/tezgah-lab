@@ -1,0 +1,89 @@
+{
+  "ok": true,
+  "command": "run",
+  "plan": "crash_recovery",
+  "plan_file": "~/stm32bench/plans/crash_recovery.toml",
+  "summary": "crash_recovery: 8/8 adım geçti.",
+  "duration_s": 1.27,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "[sim] stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.216
+    },
+    {
+      "step": 2,
+      "name": "yükleme sonrası açılış",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=PIN,SFT'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 3,
+      "name": "çökme raporu",
+      "ok": true,
+      "summary": "'HARDFAULT pc=0x080006C6 lr=0x080000A7 cfsr=0x00010000 hfsr=0x40000000'",
+      "duration_s": 0.028
+    },
+    {
+      "step": 4,
+      "name": "çöktükten sonra komut",
+      "ok": true,
+      "summary": "'PING' gönderildi.",
+      "duration_s": 0.0
+    },
+    {
+      "step": 5,
+      "name": "kart susmalı",
+      "ok": true,
+      "summary": "1 sn boyunca çıktı yok (beklenen).",
+      "duration_s": 1.004
+    },
+    {
+      "step": 6,
+      "name": "reset",
+      "ok": true,
+      "summary": "[sim] Kart resetlendi.",
+      "duration_s": 0.016
+    },
+    {
+      "step": 7,
+      "name": "resetten sonra açılış",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=PIN,SFT'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 8,
+      "name": "kart tekrar cevap veriyor",
+      "ok": true,
+      "summary": "'PONG'",
+      "duration_s": 0.0
+    }
+  ],
+  "recovery": {
+    "attempted": false
+  },
+  "report_dir": "~/stm32bench/runs/20261028-184434_crash_recovery",
+  "meta": {
+    "started": "2026-10-28T18:44:34",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "sim",
+    "programmer_version": "sim",
+    "probe_serial": "sim",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-1>",
+    "source": "debug portu, mem 0x1FFF7A10",
+    "finished": "2026-10-28T18:44:36"
+  },
+  "audit_hash": "7a2dd9a9081c6489d8829f1420f44427ab87a001ffb467eda3f641001c9f7cc8"
+}

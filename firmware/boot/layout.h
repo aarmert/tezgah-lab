@@ -1,5 +1,5 @@
 /*
- * Flash/RAM layout of the bootloader stress-test system (docs/stress/SPEC.md section 1).
+ * Flash/RAM layout of the bootloader stress-test system (public/stress/SPEC.md section 1).
  * Mirrored in stress/layout.py and in firmware/boot/mkimage.py. Keep them in sync.
  */
 #ifndef LAYOUT_H

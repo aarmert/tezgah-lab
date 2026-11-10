@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the ESP32-S3 bridge (esp32/bridge, docs/stress/SPEC-ESP32.md 2) with arduino-cli.
+"""Compile the ESP32-S3 bridge (esp32/bridge, public/stress/SPEC-ESP32.md 2) with arduino-cli.
 
     python3 esp32/build.py            # esp32/build/bridge/bridge.ino.{bin,bootloader.bin,partitions.bin,merged.bin}
     python3 esp32/build.py --json     # the result as JSON (ok, error_type, summary, likely_causes, binaries)

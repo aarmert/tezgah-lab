@@ -1,7 +1,7 @@
 # tezgah-bridge (ESP32-S3)
 
 Line bridge with a precisely timed NRST between the PC and the NUCLEO-C031C6, for the bootloader
-stress test (`docs/stress/SPEC-ESP32.md`). The update logic stays in the Python host
+stress test (`public/stress/SPEC-ESP32.md`). The update logic stays in the Python host
 (`stress/esp_bridge.py`); this firmware moves lines and fires the reset.
 
 ```

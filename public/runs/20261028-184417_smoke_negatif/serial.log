@@ -1,0 +1,23 @@
+   0.000 # flash firmware/build/stm32bench-fw.elf
+   0.831 < �
+   0.831 # reset
+   0.993 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   0.993 < �
+   0.993 > PING
+   1.002 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   1.002 < PONG
+   1.002 > VER
+   1.018 < VER 1.2.0
+   1.018 > TICK
+   1.034 < TICK 35
+   1.034 > UID
+   1.050 < UID <board-uid-2>
+   1.050 > LED O ON
+   1.066 < OK LED O ON
+   1.066 > LED O OFF
+   1.082 < OK LED O OFF
+   1.082 > FOO
+   1.098 < ERR unknown command
+   2.106 # recovery: reset
+   2.265 < �
+   2.265 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN

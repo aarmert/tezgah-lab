@@ -1,0 +1,122 @@
+{
+  "ok": false,
+  "command": "run",
+  "plan": "camera_blink",
+  "plan_file": "~/stm32bench/plans/camera_blink.toml",
+  "summary": "camera_blink: 10. adımda başarısız: LED sabit KAPALI olmalıydı, ölçülen açık: seviye 240 (eşik 159, önceki açık/kapalı 243/76), 0 geçiş; bölge [837, 783, 30, 30] (önceki cam_blink adımı), 47 kare, 30.0 fps; video cam_step10.mp4, işaretli kare cam_step10_roi.jpg",
+  "duration_s": 67.89,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.83
+    },
+    {
+      "step": 2,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=SFT,PIN'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 3,
+      "name": "send BLINK 1",
+      "ok": true,
+      "summary": "'OK BLINK 1'",
+      "duration_s": 0.016
+    },
+    {
+      "step": 4,
+      "name": "kamera: 1 Hz",
+      "ok": true,
+      "summary": "1.001 Hz, doluluk 0.50 (yükselen 4, düşen 3 kenar, kontrast 162); bölge [837, 777, 30, 30] (otomatik), 106 kare, 30.0 fps; video cam_step04.mp4, işaretli kare cam_step04_roi.jpg; adaylar (852,792) std 85.1, (1662,888) std 76.6, (780,804) std 63.2 ([0.9, 1.1] Hz aralığında)",
+      "duration_s": 21.088
+    },
+    {
+      "step": 5,
+      "name": "send BLINK 2",
+      "ok": true,
+      "summary": "'OK BLINK 2'",
+      "duration_s": 0.012
+    },
+    {
+      "step": 6,
+      "name": "kamera: 2 Hz",
+      "ok": true,
+      "summary": "1.993 Hz, doluluk 0.53 (yükselen 5, düşen 5 kenar, kontrast 161); bölge [837, 777, 30, 30] (otomatik), 78 kare, 30.0 fps; video cam_step06.mp4, işaretli kare cam_step06_roi.jpg; adaylar (852,792) std 84.4, (1662,888) std 77.1, (780,804) std 62.9 ([1.8, 2.2] Hz aralığında)",
+      "duration_s": 16.744
+    },
+    {
+      "step": 7,
+      "name": "send BLINK 4",
+      "ok": true,
+      "summary": "'OK BLINK 4'",
+      "duration_s": 0.008
+    },
+    {
+      "step": 8,
+      "name": "kamera: 4 Hz",
+      "ok": true,
+      "summary": "3.973 Hz, doluluk 0.53 (yükselen 10, düşen 10 kenar, kontrast 167); bölge [837, 783, 30, 30] (otomatik), 78 kare, 30.0 fps; video cam_step08.mp4, işaretli kare cam_step08_roi.jpg; adaylar (852,798) std 83.3, (1662,888) std 77.0, (780,804) std 62.2 ([3.6, 4.4] Hz aralığında)",
+      "duration_s": 16.874
+    },
+    {
+      "step": 9,
+      "name": "send LED G ON",
+      "ok": true,
+      "summary": "'OK LED G ON'",
+      "duration_s": 0.005
+    },
+    {
+      "step": 10,
+      "name": "kamera: LED sabit yanıyor",
+      "ok": false,
+      "error_type": "value_out_of_range",
+      "summary": "LED sabit KAPALI olmalıydı, ölçülen açık: seviye 240 (eşik 159, önceki açık/kapalı 243/76), 0 geçiş; bölge [837, 783, 30, 30] (önceki cam_blink adımı), 47 kare, 30.0 fps; video cam_step10.mp4, işaretli kare cam_step10_roi.jpg",
+      "likely_causes": [
+        "LED komutu uygulanmadı",
+        "LED bölgesi yanlış (işaretli kareye bak)"
+      ],
+      "details": null,
+      "duration_s": 12.006
+    }
+  ],
+  "recovery": {
+    "attempted": true,
+    "ok": true,
+    "actions": [
+      {
+        "action": "reset",
+        "ok": true,
+        "line": "BOOT stm32bench-fw v1.2.0 reset=SFT,PIN"
+      }
+    ]
+  },
+  "report_dir": "~/stm32bench/runs/20261028-190443_camera_blink_negatif",
+  "meta": {
+    "started": "2026-10-28T19:04:43",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "openocd",
+    "programmer_version": "0.12.0",
+    "probe_serial": "<stlink-serial>",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-2>",
+    "source": "debug portu, mem 0x1FFF7A10",
+    "finished": "2026-10-28T19:05:51"
+  },
+  "error_type": "value_out_of_range",
+  "likely_causes": [
+    "LED komutu uygulanmadı",
+    "LED bölgesi yanlış (işaretli kareye bak)"
+  ],
+  "audit_hash": "cb25bf3313255b77322b84c744366c3e8a89ce48bf06b0b00ad74ce41afce70c"
+}

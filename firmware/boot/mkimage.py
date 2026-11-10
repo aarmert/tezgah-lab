@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Makes the update images, the golden flash images and manifest.json (docs/stress/SPEC.md section 2).
+Makes the update images, the golden flash images and manifest.json (public/stress/SPEC.md section 2).
 
     python firmware/boot/mkimage.py                      # all images from firmware/boot/build/
     python firmware/boot/mkimage.py --payload app.bin --version 1.0.0 --sc 1 --slot A -o x.img

@@ -1,0 +1,16 @@
+   0.000 # flash firmware/build/stm32bench-fw.elf
+   0.830 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   0.830 > BLINK 1
+   0.845 < OK BLINK 1
+   0.846 # cam_blink: 5 sn video -> cam_step04.mp4
+  21.933 > BLINK 2
+  21.945 < OK BLINK 2
+  21.945 # cam_blink: 4 sn video -> cam_step06.mp4
+  38.689 > BLINK 4
+  38.697 < OK BLINK 4
+  38.697 # cam_blink: 4 sn video -> cam_step08.mp4
+  55.571 > LED G ON
+  55.576 < OK LED G ON
+  55.576 # cam_blink: 3 sn video -> cam_step10.mp4
+  67.582 # recovery: reset
+  67.741 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN

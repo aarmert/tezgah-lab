@@ -1,0 +1,16 @@
+   0.000 # flash firmware/build/stm32bench-fw.elf
+   0.827 < �
+   0.827 # reset
+   0.975 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   0.975 > VDD
+   0.982 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN
+   0.982 < VDD 2952
+   0.982 > TEMP
+   0.998 < TEMP 29.6
+   0.999 > TICK
+   1.014 < TICK 31
+   1.015 # clock_check: 1 sn bekleniyor
+   2.007 > TICK
+   2.022 < TICK 1033
+   2.022 # recovery: reset
+   2.182 < BOOT stm32bench-fw v1.2.0 reset=SFT,PIN

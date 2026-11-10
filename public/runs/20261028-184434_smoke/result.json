@@ -1,0 +1,103 @@
+{
+  "ok": true,
+  "command": "run",
+  "plan": "smoke",
+  "plan_file": "~/stm32bench/plans/smoke.toml",
+  "summary": "smoke: 10/10 adım geçti.",
+  "duration_s": 0.22,
+  "steps": [
+    {
+      "step": 1,
+      "name": "flash",
+      "ok": true,
+      "summary": "[sim] stm32bench-fw.elf yüklendi ve doğrulandı.",
+      "duration_s": 0.216
+    },
+    {
+      "step": 2,
+      "name": "reset",
+      "ok": true,
+      "summary": "[sim] Kart resetlendi.",
+      "duration_s": 0.004
+    },
+    {
+      "step": 3,
+      "name": "açılış mesajı",
+      "ok": true,
+      "summary": "'BOOT stm32bench-fw v1.2.0 reset=PIN,SFT'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 4,
+      "name": "send PING",
+      "ok": true,
+      "summary": "'PONG'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 5,
+      "name": "send VER",
+      "ok": true,
+      "summary": "'VER 1.2.0'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 6,
+      "name": "send TICK",
+      "ok": true,
+      "summary": "'TICK 4' (değer 4 [1, 600000] aralığında)",
+      "duration_s": 0.0
+    },
+    {
+      "step": 7,
+      "name": "send UID",
+      "ok": true,
+      "summary": "'UID <board-uid-1>'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 8,
+      "name": "send LED O ON",
+      "ok": true,
+      "summary": "'OK LED O ON'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 9,
+      "name": "send LED O OFF",
+      "ok": true,
+      "summary": "'OK LED O OFF'",
+      "duration_s": 0.0
+    },
+    {
+      "step": 10,
+      "name": "send FOO",
+      "ok": true,
+      "summary": "'ERR unknown command'",
+      "duration_s": 0.0
+    }
+  ],
+  "recovery": {
+    "attempted": false
+  },
+  "report_dir": "~/stm32bench/runs/20261028-184434_smoke",
+  "meta": {
+    "started": "2026-10-28T18:44:34",
+    "host": "<host>",
+    "bench_version": "0.2.0",
+    "bench_sha256": "48b1904aafed211785e0d7b6aa6a04de3ef2b2a8cec5496fea22df7bc3610b72",
+    "programmer": "sim",
+    "programmer_version": "sim",
+    "probe_serial": "sim",
+    "firmware": [
+      {
+        "path": "~/stm32bench/firmware/build/stm32bench-fw.elf",
+        "sha256": "32257db3482a2351fc9905047a37ac56bbfe3af0f3dbfffc28e05517a621a7c0"
+      }
+    ],
+    "uid": "<board-uid-1>",
+    "source": "debug portu, mem 0x1FFF7A10, seri porttaki UID ile aynı",
+    "finished": "2026-10-28T18:44:34"
+  },
+  "audit_hash": "2f1c28af286cf1e706f86afea996c2dc3e5ed51dc23e54a801b14fe9fa53c59c"
+}

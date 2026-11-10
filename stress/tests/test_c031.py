@@ -1,4 +1,4 @@
-"""NUCLEO-C031C6 target (docs/stress/SPEC-C031C6.md): layout, image format, and the simulated C0 BL
+"""NUCLEO-C031C6 target (public/stress/SPEC-C031C6.md): layout, image format, and the simulated C0 BL
 answering like SPEC-C031C6 says (pages, double-words, 400-char lines, target=c031)."""
 import base64
 import shutil
