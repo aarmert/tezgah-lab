@@ -1,15 +1,4 @@
-runs/*
-!runs/.gitkeep
-firmware/build/
-bench.toml
+.venv/
 __pycache__/
 node_modules/
-docs/raporlar/
-stress_runs/
-stress.toml
-firmware/boot/build/
-firmware/boot_c0/build/
-.venv/
-esp32/build/
-bench-c031.toml
-!public/stress_runs/
+.ruff_cache/

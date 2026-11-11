@@ -4,3 +4,6 @@
 [submodule "f407-camera-blink"]
 	path = f407-camera-blink
 	url = https://github.com/aarmert/f407-camera-blink.git
+[submodule "f407-hil-bench"]
+	path = f407-hil-bench
+	url = https://github.com/aarmert/f407-hil-bench.git
