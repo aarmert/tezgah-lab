@@ -33,7 +33,14 @@ its figures and a README that explains the results:
 | [**f407-camera-blink**](https://github.com/aarmert/f407-camera-blink) | Measuring the F407 LED's blink frequency and duty cycle with a phone camera, frame by frame, and checking it against the board's own clock. The analysis is a standalone package (`blinkmeter`). |
 
 This repo stays the full workbench that both came from: `bench.py`, the test plans, the stress tool
-and the agent rules.
+and the agent rules. Both projects are included here as git submodules, in
+`c031-ab-bootloader-stress/` and `f407-camera-blink/`. To get them with this repo:
+
+```bash
+git clone --recurse-submodules https://github.com/aarmert/tezgah-lab.git tezgah
+# or, in an existing clone:
+git submodule update --init
+```
 
 **Contents:** [Standalone projects](#standalone-projects) ·
 [Results](#results-so-far) ·

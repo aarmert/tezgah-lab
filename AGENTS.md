@@ -13,6 +13,10 @@ This folder has two STM32 test benches. Touch a board only through `bench.py` or
 - `esp32/bridge/`, `esp32/build.py`: the ESP32-S3 line bridge with a timed NRST
 - `public/stress/`: the stress-test specs (`SPEC.md` + `SPEC-C031C6.md` + `SPEC-ESP32.md`) and the results deck
 - `public/`: published run data and the Turkish PDFs (training booklet, 3103-trial report)
+- `c031-ab-bootloader-stress/`, `f407-camera-blink/`: git submodules, the two standalone projects split
+  out of this repo. Each has its own git history, `pyproject.toml` and `.venv`: run commands and commit
+  inside the submodule, then commit the new submodule pointer here. They touch no board; board work
+  stays in this repo's `bench.py` and `python -m stress`.
 
 ## Hardware
 F407 bench (`bench.toml`, the `plans/` and `bench.py` commands below):
