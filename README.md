@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
-  <img src="assets/banner-light.png" alt="tezgah-lab: self-driving lab for embedded systems" width="100%">
+  <img src="assets/banner-light.png" alt="tezgah-lab: agent-driven lab for embedded systems" width="100%">
 </picture>
 
 *Tezgah* is Turkish for workbench. This is the umbrella repo for a hardware-in-the-loop test setup for
