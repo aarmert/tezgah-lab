@@ -22,7 +22,21 @@ It holds two benches:
 </p>
 <p align="center"><em>The C031 bench: the ESP32-S3 bridge (top) and the NUCLEO-C031C6.</em></p>
 
-**Contents:** [Results](#results-so-far) ·
+## Standalone projects
+
+Two parts of this bench are also published as smaller repos of their own. Each one has its data,
+its figures and a README that explains the results:
+
+| Project | What it is |
+|---|---|
+| [**c031-ab-bootloader-stress**](https://github.com/aarmert/c031-ab-bootloader-stress) | The 3103-trial reset sweep of the A/B bootloader on the NUCLEO-C031C6, with the naive bootloader as the negative control, the statistics and the raw results |
+| [**f407-camera-blink**](https://github.com/aarmert/f407-camera-blink) | Measuring the F407 LED's blink frequency and duty cycle with a phone camera, frame by frame, and checking it against the board's own clock. The analysis is a standalone package (`blinkmeter`). |
+
+This repo stays the full workbench that both came from: `bench.py`, the test plans, the stress tool
+and the agent rules.
+
+**Contents:** [Standalone projects](#standalone-projects) ·
+[Results](#results-so-far) ·
 [Try it without hardware](#try-it-without-hardware) ·
 [Requirements](#requirements) ·
 [Bootloader stress test](#the-bootloader-stress-test) ·
@@ -115,6 +129,9 @@ Config files: the F407 bench reads `bench.toml`, and the C031 bench reads `bench
 
 The question it answers: if power fails or the board resets at any moment of a firmware update, does
 the board still boot a correct image?
+
+> The results of this test, with figures and the full explanation, are in
+> [c031-ab-bootloader-stress](https://github.com/aarmert/c031-ab-bootloader-stress).
 
 - **The bootloader under test** keeps two slots, A and B. A new image goes to the inactive slot and boots
   as a trial. The app must confirm itself within about a second, otherwise the watchdog resets it and
@@ -310,6 +327,9 @@ Every new plan should pass `--verify-can-fail`. A test that does not fail when t
 deliberately broken proves nothing.
 
 ### Measuring an LED with the camera (`cam_blink`)
+
+> A standalone version of this measurement, with the recorded videos, figures and the comparison
+> against the board clock, is in [f407-camera-blink](https://github.com/aarmert/f407-camera-blink).
 
 ```toml
 [[step]]
